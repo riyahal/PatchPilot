@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import tempfile
 from pathlib import Path
 from typing import List
 
-import asyncio
 import httpx
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -74,10 +74,10 @@ def github_zip_url(repo_url: str, ref: str = "main"):
         r"^https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", repo_url, re.IGNORECASE
     )
     if not m:
-        raise HTTPException(
-            status_code=422,
-            detail="Invalid GitHub URL format. Expected: https://github.com/owner/repo",
+        raise ValueError(
+            "Invalid GitHub URL format. Expected: https://github.com/owner/repo"
         )
+
     owner, repo = m.group(1), m.group(2)
     return (
         f"https://github.com/{owner}/{repo}/archive/refs/heads/{ref}.zip",
@@ -104,7 +104,7 @@ async def check_repo_reachable(owner: str, repo: str) -> None:
     except httpx.TimeoutException:
         raise HTTPException(
             status_code=422,
-            detail="Repository not found or is private. Check the URL and try again.",
+            detail="Could not reach GitHub — check your network connection.",
         )
 
 
@@ -191,9 +191,17 @@ async def scan_url(
     repo_dir = job_dir / "repo"
     ensure_dir(repo_dir)
 
-    zip_url, owner, repo = github_zip_url(repo_url, ref=ref)
+    try:
+        zip_url, owner, repo = github_zip_url(repo_url, ref=ref)
+    except ValueError as e:
+        safe_rmtree(job_dir)
+        raise HTTPException(status_code=422, detail=str(e))
 
-    await check_repo_reachable(owner, repo)
+    try:
+        await check_repo_reachable(owner, repo)
+    except HTTPException:
+        safe_rmtree(job_dir)
+        raise
 
     try:
         await asyncio.wait_for(download_to_path(zip_url, archive_path), timeout=30.0)
