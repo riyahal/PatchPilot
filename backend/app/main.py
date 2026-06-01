@@ -3,6 +3,13 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from __future__ import annotations
+
+import logging
+import os
+import re
+import tempfile
+import uuid
 from pathlib import Path
 from typing import List
 
@@ -11,17 +18,15 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from .models import ScanResponse, Finding, FixRequest, FixResponse, VerifyResponse
-from .scanners.semgrep import run_semgrep
-from .scanners.osv import run_osv_scanner
-from .scanners.gitleaks import run_gitleaks
-from .remediation.engine import propose_fixes
-from .sandbox.verify import verify_repo
-from .reports.evidence_pack import build_evidence_pack
-from .utils.fs import unzip_to_dir, safe_rmtree, ensure_dir
-import uuid
-import logging
 from .db import init_db, get_db
+from .models import ScanResponse, Finding, FixRequest, FixResponse, VerifyResponse
+from .remediation.engine import propose_fixes
+from .reports.evidence_pack import build_evidence_pack
+from .sandbox.verify import verify_repo
+from .scanners.gitleaks import run_gitleaks
+from .scanners.osv import run_osv_scanner
+from .scanners.semgrep import run_semgrep
+from .utils.fs import ensure_dir, safe_rmtree, unzip_to_dir
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="PatchPilot API", version="0.1.0")
@@ -35,8 +40,7 @@ app.add_middleware(
 )
 
 WORK_ROOT = Path(
-    os.environ.get("PATCHPILOT_WORKDIR", Path(
-        tempfile.gettempdir()) / "patchpilot")
+    os.environ.get("PATCHPILOT_WORKDIR", Path(tempfile.gettempdir()) / "patchpilot")
 )
 ensure_dir(WORK_ROOT)
 
@@ -150,18 +154,42 @@ async def scan(
         async with await get_db() as db:
             await db.execute(
                 "INSERT INTO jobs (job_id, project_name, scan_method) VALUES (?, ?, ?)",
-                (job_id, project_name, "zip")
+                (job_id, project_name, "zip"),
             )
+            rows = []
             for f in findings:
-                await db.execute(
-                    "INSERT INTO findings (id, job_id, rule_id, severity, category, file_path, line_number, cwe, scanner, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (str(uuid.uuid4()), job_id, f.rule_id, f.severity, f.category,
-                     f.file_path, f.line_number, f.cwe, f.scanner, f.message)
+                engine = (f.metadata or {}).get("engine")
+                scanner = {"osv-scanner": "osv"}.get(engine, engine)
+                rule_id = (
+                    (f.metadata or {}).get("check_id")
+                    or (f.metadata or {}).get("rule")
+                    or (f.metadata or {}).get("osv_id")
+                    or f.title
                 )
+                file_path = f.location.path if f.location else None
+                line_number = f.location.start_line if f.location else None
+                message = f.description or f.title
+                rows.append(
+                    (
+                        str(uuid.uuid4()),
+                        job_id,
+                        rule_id,
+                        f.severity,
+                        f.category,
+                        file_path,
+                        line_number,
+                        None,
+                        scanner,
+                        message,
+                    )
+                )
+            await db.executemany(
+                "INSERT INTO findings (id, job_id, rule_id, severity, category, file_path, line_number, cwe, scanner, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
             await db.commit()
-    except Exception as e:
-        logger.warning(f"DB write failed for job {job_id}: {e}")
-
+    except Exception:
+        logger.exception("DB write failed for job %s", job_id)
     return ScanResponse(
         job_id=job_id,
         project_name=project_name,
@@ -199,29 +227,59 @@ async def scan_url(
         raise
     except Exception as e:
         safe_rmtree(job_dir)
-        raise HTTPException(
-            status_code=400, detail=f"Import from URL failed: {e}")
+        raise HTTPException(status_code=400, detail=f"Import from URL failed: {e}")
 
     scan_root = _maybe_use_single_top_folder(repo_dir)
 
     semgrep, osv, gitleaks, findings = _scan_repo_dir(scan_root)
-
     try:
         async with await get_db() as db:
             await db.execute(
                 "INSERT INTO jobs (job_id, project_name, scan_method) VALUES (?, ?, ?)",
-                (job_id, project_name, "url")
+                (job_id, project_name, "url"),
             )
-            for f in findings:
-                await db.execute(
-                    "INSERT INTO findings (id, job_id, rule_id, severity, category, file_path, line_number, cwe, scanner, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (str(uuid.uuid4()), job_id, f.rule_id, f.severity, f.category,
-                     f.file_path, f.line_number, f.cwe, f.scanner, f.message)
-                )
-            await db.commit()
-    except Exception as e:
-        logger.warning(f"DB write failed for job {job_id}: {e}")
 
+            rows = []
+
+            for f in findings:
+                engine = (f.metadata or {}).get("engine")
+                scanner = {"osv-scanner": "osv"}.get(engine, engine)
+
+                rule_id = (
+                    (f.metadata or {}).get("check_id")
+                    or (f.metadata or {}).get("rule")
+                    or (f.metadata or {}).get("osv_id")
+                    or f.title
+                )
+
+                file_path = f.location.path if f.location else None
+                line_number = f.location.start_line if f.location else None
+                message = f.description or f.title
+
+                rows.append(
+                    (
+                        str(uuid.uuid4()),
+                        job_id,
+                        rule_id,
+                        f.severity,
+                        f.category,
+                        file_path,
+                        line_number,
+                        None,
+                        scanner,
+                        message,
+                    )
+                )
+
+            await db.executemany(
+                "INSERT INTO findings (id, job_id, rule_id, severity, category, file_path, line_number, cwe, scanner, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+
+            await db.commit()
+
+    except Exception:
+        logger.exception("DB write failed for job %s", job_id)
     return ScanResponse(
         job_id=job_id,
         project_name=project_name,

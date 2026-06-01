@@ -1,7 +1,7 @@
 import aiosqlite
 import os
 
-DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "patchpilot.db"))
+DB_PATH = os.path.join(os.path.dirname(__file__), "..", "patchpilot.db")
 
 
 async def init_db():
