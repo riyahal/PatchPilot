@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import tempfile
@@ -81,17 +82,44 @@ def _scan_repo_dir(repo_dir: Path):
     return semgrep, osv, gitleaks, findings
 
 
-def github_zip_url(repo_url: str, ref: str = "main") -> str:
+def github_zip_url(repo_url: str, ref: str = "main"):
     repo_url = repo_url.strip()
     m = re.match(
         r"^https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", repo_url, re.IGNORECASE
     )
     if not m:
-        raise HTTPException(
-            status_code=400, detail="Only GitHub repo URLs are supported right now."
+        raise ValueError(
+            "Invalid GitHub URL format. Expected: https://github.com/owner/repo"
         )
+
     owner, repo = m.group(1), m.group(2)
-    return f"https://github.com/{owner}/{repo}/archive/refs/heads/{ref}.zip"
+    return (
+        f"https://github.com/{owner}/{repo}/archive/refs/heads/{ref}.zip",
+        owner,
+        repo,
+    )
+
+
+async def check_repo_reachable(owner: str, repo: str) -> None:
+    url = f"https://github.com/{owner}/{repo}"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+            r = await client.head(url, follow_redirects=True)
+            if r.status_code == 404:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Repository not found or is private. Check the URL and try again.",
+                )
+            if r.status_code != 200:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Repository not reachable (HTTP {r.status_code}).",
+                )
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=422,
+            detail="Could not reach GitHub — check your network connection.",
+        )
 
 
 async def download_to_path(url: str, dest_path: Path) -> None:
@@ -134,15 +162,39 @@ async def scan(
     ensure_dir(job_dir)
 
     archive_path = job_dir / project.filename
-    content = await project.read()
-    archive_path.write_bytes(content)
-
-    repo_dir = job_dir / "repo"
-    ensure_dir(repo_dir)
+    success = False
 
     try:
+        content = await project.read()
+        archive_path.write_bytes(content)
+
+        repo_dir = job_dir / "repo"
+        ensure_dir(repo_dir)
+
         unzip_to_dir(archive_path, repo_dir)
+
+        scan_root = _maybe_use_single_top_folder(repo_dir)
+
+        semgrep, osv, gitleaks, findings = _scan_repo_dir(scan_root)
+
+        response = ScanResponse(
+            job_id=job_id,
+            project_name=project_name,
+            repo_path=str(scan_root),
+            findings=findings,
+            scanners={
+                "semgrep": {"ok": True, "count": len(semgrep)},
+                "osv": {"ok": True, "count": len(osv)},
+                "gitleaks": {"ok": True, "count": len(gitleaks)},
+            },
+        )
+
+        success = True
+        return response
+    except HTTPException:
+        raise
     except Exception as e:
+
         safe_rmtree(job_dir)
         raise HTTPException(status_code=400, detail=f"Invalid zip upload: {e}")
 
@@ -202,6 +254,13 @@ async def scan(
         },
     )
 
+        raise HTTPException(status_code=400, detail=f"Scan failed: {e}")
+
+    finally:
+        if not success:
+            safe_rmtree(job_dir)
+
+
 
 @app.post("/scan-url", response_model=ScanResponse)
 async def scan_url(
@@ -217,15 +276,50 @@ async def scan_url(
     repo_dir = job_dir / "repo"
     ensure_dir(repo_dir)
 
-    zip_url = github_zip_url(repo_url, ref=ref)
+    try:
+        zip_url, owner, repo = github_zip_url(repo_url, ref=ref)
+    except ValueError as e:
+        safe_rmtree(job_dir)
+        raise HTTPException(status_code=422, detail=str(e))
 
     try:
-        await download_to_path(zip_url, archive_path)
-        unzip_to_dir(archive_path, repo_dir)
+        await check_repo_reachable(owner, repo)
     except HTTPException:
         safe_rmtree(job_dir)
         raise
+
+    success = False
+
+    try:
+        await asyncio.wait_for(download_to_path(zip_url, archive_path), timeout=30.0)
+        unzip_to_dir(archive_path, repo_dir)
+
+        scan_root = _maybe_use_single_top_folder(repo_dir)
+
+        semgrep, osv, gitleaks, findings = _scan_repo_dir(scan_root)
+
+        response = ScanResponse(
+            job_id=job_id,
+            project_name=project_name,
+            repo_path=str(scan_root),
+            findings=findings,
+            scanners={
+                "semgrep": {"ok": True, "count": len(semgrep)},
+                "osv": {"ok": True, "count": len(osv)},
+                "gitleaks": {"ok": True, "count": len(gitleaks)},
+            },
+        )
+
+        success = True
+        return response
+
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Repository clone timed out.")
+    except HTTPException:
+        raise
+
     except Exception as e:
+
         safe_rmtree(job_dir)
         raise HTTPException(status_code=400, detail=f"Import from URL failed: {e}")
 
@@ -291,6 +385,16 @@ async def scan_url(
             "gitleaks": {"ok": True, "count": len(gitleaks)},
         },
     )
+
+        raise HTTPException(
+            status_code=400,
+            detail=f"Import from URL failed: {e}",
+        )
+
+    finally:
+        if not success:
+            safe_rmtree(job_dir)
+
 
 
 @app.post("/fix", response_model=FixResponse)
