@@ -47,6 +47,7 @@ def health():
     status = "ok" if all(scanners.values()) else "degraded"
 
     return {
+        "ok": True,
         "status": status,
         "scanners": scanners,
     }
