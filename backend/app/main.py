@@ -20,6 +20,7 @@ from .remediation.engine import propose_fixes
 from .sandbox.verify import verify_repo
 from .reports.evidence_pack import build_evidence_pack
 from .utils.fs import unzip_to_dir, safe_rmtree, ensure_dir
+from .db import init_db
 
 app = FastAPI(title="PatchPilot API", version="0.1.0")
 
@@ -35,6 +36,11 @@ WORK_ROOT = Path(
     os.environ.get("PATCHPILOT_WORKDIR", Path(tempfile.gettempdir()) / "patchpilot")
 )
 ensure_dir(WORK_ROOT)
+
+
+@app.on_event("startup")
+async def startup():
+    await init_db()
 
 
 @app.get("/health")
