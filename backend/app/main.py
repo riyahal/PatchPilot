@@ -6,8 +6,9 @@ import tempfile
 from pathlib import Path
 from typing import List
 
+
 import httpx
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException,Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -19,6 +20,8 @@ from .remediation.engine import propose_fixes
 from .sandbox.verify import verify_repo
 from .reports.evidence_pack import build_evidence_pack
 from .utils.fs import unzip_to_dir, safe_rmtree, ensure_dir
+MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", 100))
+MAX_UPLOAD_SIZE = MAX_UPLOAD_MB * 1024 * 1024
 
 app = FastAPI(title="PatchPilot API", version="0.1.0")
 
@@ -112,9 +115,18 @@ def _maybe_use_single_top_folder(repo_dir: Path) -> Path:
 
 @app.post("/scan", response_model=ScanResponse)
 async def scan(
+    request: Request,
     project: UploadFile = File(...),
     project_name: str = Form("project"),
 ):
+    content_length = request.headers.get("content-length")
+
+    if content_length and int(content_length) > MAX_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum upload size is {MAX_UPLOAD_MB}MB.",
+        )
+
     job_id = next(tempfile._get_candidate_names())
     job_dir = WORK_ROOT / job_id
     ensure_dir(job_dir)
@@ -148,48 +160,6 @@ async def scan(
         },
     )
 
-
-@app.post("/scan-url", response_model=ScanResponse)
-async def scan_url(
-    repo_url: str = Form(...),
-    ref: str = Form("main"),
-    project_name: str = Form("project"),
-):
-    job_id = next(tempfile._get_candidate_names())
-    job_dir = WORK_ROOT / job_id
-    ensure_dir(job_dir)
-
-    archive_path = job_dir / "repo.zip"
-    repo_dir = job_dir / "repo"
-    ensure_dir(repo_dir)
-
-    zip_url = github_zip_url(repo_url, ref=ref)
-
-    try:
-        await download_to_path(zip_url, archive_path)
-        unzip_to_dir(archive_path, repo_dir)
-    except HTTPException:
-        safe_rmtree(job_dir)
-        raise
-    except Exception as e:
-        safe_rmtree(job_dir)
-        raise HTTPException(status_code=400, detail=f"Import from URL failed: {e}")
-
-    scan_root = _maybe_use_single_top_folder(repo_dir)
-
-    semgrep, osv, gitleaks, findings = _scan_repo_dir(scan_root)
-
-    return ScanResponse(
-        job_id=job_id,
-        project_name=project_name,
-        repo_path=str(scan_root),
-        findings=findings,
-        scanners={
-            "semgrep": {"ok": True, "count": len(semgrep)},
-            "osv": {"ok": True, "count": len(osv)},
-            "gitleaks": {"ok": True, "count": len(gitleaks)},
-        },
-    )
 
 
 @app.post("/fix", response_model=FixResponse)
