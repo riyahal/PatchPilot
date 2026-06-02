@@ -143,6 +143,8 @@ def _maybe_use_single_top_folder(repo_dir: Path) -> Path:
     return repo_dir
 
 
+
+
 @app.post("/scan", response_model=ScanResponse)
 async def scan(
     request: Request,
@@ -151,17 +153,18 @@ async def scan(
 ):
     content_length = request.headers.get("content-length")
 
+    try:
+        content_length = int(content_length) if content_length else None
+    except ValueError:
+        content_length = None
 
-try:
-    content_length = int(content_length) if content_length else None
-except ValueError:
-    content_length = None
+    if content_length and content_length > MAX_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum upload size is {MAX_UPLOAD_MB}MB.",
+        )
 
-if content_length and content_length > MAX_UPLOAD_SIZE:
-    raise HTTPException(
-        status_code=413,
-        detail=f"File too large. Maximum upload size is {MAX_UPLOAD_MB}MB.",
-    )
+   
 
     job_id = next(tempfile._get_candidate_names())
     job_dir = WORK_ROOT / job_id
@@ -235,6 +238,8 @@ if content_length and content_length > MAX_UPLOAD_SIZE:
             "gitleaks": {"ok": True, "count": len(gitleaks)},
         },
     )
+
+
 
 
 @app.post("/scan-url", response_model=ScanResponse)
