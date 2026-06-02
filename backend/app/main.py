@@ -1,4 +1,5 @@
 from __future__ import annotations
+import shutil
 
 import asyncio
 import os
@@ -45,7 +46,19 @@ async def startup():
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    scanners = {
+        "semgrep": shutil.which("semgrep") is not None,
+        "osv-scanner": shutil.which("osv-scanner") is not None,
+        "gitleaks": shutil.which("gitleaks") is not None,
+    }
+
+    status = "ok" if all(scanners.values()) else "degraded"
+
+    return {
+        "ok": True,
+        "status": status,
+        "scanners": scanners,
+    }
 
 
 def _prioritize_findings(findings: List[Finding]) -> List[Finding]:
