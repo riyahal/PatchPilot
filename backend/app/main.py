@@ -9,8 +9,9 @@ import uuid
 from pathlib import Path
 from typing import List
 
+
 import httpx
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -23,6 +24,16 @@ from .scanners.gitleaks import run_gitleaks
 from .scanners.osv import run_osv_scanner
 from .scanners.semgrep import run_semgrep
 from .utils.fs import ensure_dir, safe_rmtree, unzip_to_dir
+
+_MAX_UPLOAD_MB_RAW = os.environ.get("MAX_UPLOAD_MB")
+
+try:
+    MAX_UPLOAD_MB = int(_MAX_UPLOAD_MB_RAW) if _MAX_UPLOAD_MB_RAW else 100
+except ValueError:
+    MAX_UPLOAD_MB = 100
+
+MAX_UPLOAD_MB = max(1, MAX_UPLOAD_MB)
+MAX_UPLOAD_SIZE = MAX_UPLOAD_MB * 1024 * 1024
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="PatchPilot API", version="0.1.0")
@@ -134,9 +145,23 @@ def _maybe_use_single_top_folder(repo_dir: Path) -> Path:
 
 @app.post("/scan", response_model=ScanResponse)
 async def scan(
+    request: Request,
     project: UploadFile = File(...),
     project_name: str = Form("project"),
 ):
+    content_length = request.headers.get("content-length")
+
+    try:
+        content_length = int(content_length) if content_length else None
+    except ValueError:
+        content_length = None
+
+    if content_length and content_length > MAX_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum upload size is {MAX_UPLOAD_MB}MB.",
+        )
+
     job_id = next(tempfile._get_candidate_names())
     job_dir = WORK_ROOT / job_id
     ensure_dir(job_dir)
@@ -240,54 +265,7 @@ async def scan_url(
     scan_root = _maybe_use_single_top_folder(repo_dir)
 
     semgrep, osv, gitleaks, findings = _scan_repo_dir(scan_root)
-    try:
-        async with await get_db() as db:
-            await db.execute(
-                "INSERT INTO jobs (job_id, project_name, scan_method) VALUES (?, ?, ?)",
-                (job_id, project_name, "url"),
-            )
 
-            rows = []
-
-            for f in findings:
-                engine = (f.metadata or {}).get("engine")
-                scanner = {"osv-scanner": "osv"}.get(engine, engine)
-
-                rule_id = (
-                    (f.metadata or {}).get("check_id")
-                    or (f.metadata or {}).get("rule")
-                    or (f.metadata or {}).get("osv_id")
-                    or f.title
-                )
-
-                file_path = f.location.path if f.location else None
-                line_number = f.location.start_line if f.location else None
-                message = f.description or f.title
-
-                rows.append(
-                    (
-                        str(uuid.uuid4()),
-                        job_id,
-                        rule_id,
-                        f.severity,
-                        f.category,
-                        file_path,
-                        line_number,
-                        None,
-                        scanner,
-                        message,
-                    )
-                )
-
-            await db.executemany(
-                "INSERT INTO findings (id, job_id, rule_id, severity, category, file_path, line_number, cwe, scanner, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                rows,
-            )
-
-            await db.commit()
-
-    except Exception:
-        logger.exception("DB write failed for job %s", job_id)
     return ScanResponse(
         job_id=job_id,
         project_name=project_name,
