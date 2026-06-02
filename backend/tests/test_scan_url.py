@@ -17,10 +17,12 @@ def test_scan_url_invalid_format():
 
 @patch("app.main.httpx.AsyncClient")
 def test_scan_url_not_found(mock_async_client):
-    mock_client = mock_async_client.return_value.__aenter__.return_value
-    mock_response = AsyncMock()
-    mock_response.status_code = 404
-    mock_client.head.return_value = mock_response
+    mock_client = AsyncMock()
+    mock_async_client.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_async_client.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    mock_response = httpx.Response(404)
+    mock_client.head = AsyncMock(return_value=mock_response)
 
     res = client.post(
         "/scan-url",
