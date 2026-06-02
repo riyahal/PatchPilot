@@ -1,10 +1,11 @@
 from __future__ import annotations
-import shutil
 
-import asyncio
+import logging
 import os
 import re
+import shutil
 import tempfile
+import uuid
 from pathlib import Path
 from typing import List
 
@@ -13,16 +14,17 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from .db import init_db, get_db
 from .models import ScanResponse, Finding, FixRequest, FixResponse, VerifyResponse
-from .scanners.semgrep import run_semgrep
-from .scanners.osv import run_osv_scanner
-from .scanners.gitleaks import run_gitleaks
 from .remediation.engine import propose_fixes
-from .sandbox.verify import verify_repo
 from .reports.evidence_pack import build_evidence_pack
-from .utils.fs import unzip_to_dir, safe_rmtree, ensure_dir
-from .db import init_db
+from .sandbox.verify import verify_repo
+from .scanners.gitleaks import run_gitleaks
+from .scanners.osv import run_osv_scanner
+from .scanners.semgrep import run_semgrep
+from .utils.fs import ensure_dir, safe_rmtree, unzip_to_dir
 
+logger = logging.getLogger(__name__)
 app = FastAPI(title="PatchPilot API", version="0.1.0")
 
 app.add_middleware(
@@ -87,44 +89,17 @@ def _scan_repo_dir(repo_dir: Path):
     return semgrep, osv, gitleaks, findings
 
 
-def github_zip_url(repo_url: str, ref: str = "main"):
+def github_zip_url(repo_url: str, ref: str = "main") -> str:
     repo_url = repo_url.strip()
     m = re.match(
         r"^https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", repo_url, re.IGNORECASE
     )
     if not m:
-        raise ValueError(
-            "Invalid GitHub URL format. Expected: https://github.com/owner/repo"
-        )
-
-    owner, repo = m.group(1), m.group(2)
-    return (
-        f"https://github.com/{owner}/{repo}/archive/refs/heads/{ref}.zip",
-        owner,
-        repo,
-    )
-
-
-async def check_repo_reachable(owner: str, repo: str) -> None:
-    url = f"https://github.com/{owner}/{repo}"
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
-            r = await client.head(url, follow_redirects=True)
-            if r.status_code == 404:
-                raise HTTPException(
-                    status_code=422,
-                    detail="Repository not found or is private. Check the URL and try again.",
-                )
-            if r.status_code != 200:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Repository not reachable (HTTP {r.status_code}).",
-                )
-    except httpx.TimeoutException:
         raise HTTPException(
-            status_code=422,
-            detail="Could not reach GitHub — check your network connection.",
+            status_code=400, detail="Only GitHub repo URLs are supported right now."
         )
+    owner, repo = m.group(1), m.group(2)
+    return f"https://github.com/{owner}/{repo}/archive/refs/heads/{ref}.zip"
 
 
 async def download_to_path(url: str, dest_path: Path) -> None:
@@ -167,43 +142,73 @@ async def scan(
     ensure_dir(job_dir)
 
     archive_path = job_dir / project.filename
-    success = False
+    content = await project.read()
+    archive_path.write_bytes(content)
+
+    repo_dir = job_dir / "repo"
+    ensure_dir(repo_dir)
 
     try:
-        content = await project.read()
-        archive_path.write_bytes(content)
-
-        repo_dir = job_dir / "repo"
-        ensure_dir(repo_dir)
-
         unzip_to_dir(archive_path, repo_dir)
-
-        scan_root = _maybe_use_single_top_folder(repo_dir)
-
-        semgrep, osv, gitleaks, findings = _scan_repo_dir(scan_root)
-
-        response = ScanResponse(
-            job_id=job_id,
-            project_name=project_name,
-            repo_path=str(scan_root),
-            findings=findings,
-            scanners={
-                "semgrep": {"ok": True, "count": len(semgrep)},
-                "osv": {"ok": True, "count": len(osv)},
-                "gitleaks": {"ok": True, "count": len(gitleaks)},
-            },
-        )
-
-        success = True
-        return response
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Scan failed: {e}")
+        safe_rmtree(job_dir)
+        raise HTTPException(status_code=400, detail=f"Invalid zip upload: {e}")
 
-    finally:
-        if not success:
-            safe_rmtree(job_dir)
+    scan_root = _maybe_use_single_top_folder(repo_dir)
+
+    semgrep, osv, gitleaks, findings = _scan_repo_dir(scan_root)
+
+    try:
+        async with await get_db() as db:
+            await db.execute(
+                "INSERT INTO jobs (job_id, project_name, scan_method) VALUES (?, ?, ?)",
+                (job_id, project_name, "zip"),
+            )
+            rows = []
+            for f in findings:
+                engine = (f.metadata or {}).get("engine")
+                scanner = {"osv-scanner": "osv"}.get(engine, engine)
+                rule_id = (
+                    (f.metadata or {}).get("check_id")
+                    or (f.metadata or {}).get("rule")
+                    or (f.metadata or {}).get("osv_id")
+                    or f.title
+                )
+                file_path = f.location.path if f.location else None
+                line_number = f.location.start_line if f.location else None
+                message = f.description or f.title
+                rows.append(
+                    (
+                        str(uuid.uuid4()),
+                        job_id,
+                        rule_id,
+                        f.severity,
+                        f.category,
+                        file_path,
+                        line_number,
+                        None,
+                        scanner,
+                        message,
+                    )
+                )
+            await db.executemany(
+                "INSERT INTO findings (id, job_id, rule_id, severity, category, file_path, line_number, cwe, scanner, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            await db.commit()
+    except Exception:
+        logger.exception("DB write failed for job %s", job_id)
+    return ScanResponse(
+        job_id=job_id,
+        project_name=project_name,
+        repo_path=str(scan_root),
+        findings=findings,
+        scanners={
+            "semgrep": {"ok": True, "count": len(semgrep)},
+            "osv": {"ok": True, "count": len(osv)},
+            "gitleaks": {"ok": True, "count": len(gitleaks)},
+        },
+    )
 
 
 @app.post("/scan-url", response_model=ScanResponse)
@@ -220,57 +225,80 @@ async def scan_url(
     repo_dir = job_dir / "repo"
     ensure_dir(repo_dir)
 
-    try:
-        zip_url, owner, repo = github_zip_url(repo_url, ref=ref)
-    except ValueError as e:
-        safe_rmtree(job_dir)
-        raise HTTPException(status_code=422, detail=str(e))
+    zip_url = github_zip_url(repo_url, ref=ref)
 
     try:
-        await check_repo_reachable(owner, repo)
-    except HTTPException:
-        safe_rmtree(job_dir)
-        raise
-
-    success = False
-
-    try:
-        await asyncio.wait_for(download_to_path(zip_url, archive_path), timeout=30.0)
+        await download_to_path(zip_url, archive_path)
         unzip_to_dir(archive_path, repo_dir)
-
-        scan_root = _maybe_use_single_top_folder(repo_dir)
-
-        semgrep, osv, gitleaks, findings = _scan_repo_dir(scan_root)
-
-        response = ScanResponse(
-            job_id=job_id,
-            project_name=project_name,
-            repo_path=str(scan_root),
-            findings=findings,
-            scanners={
-                "semgrep": {"ok": True, "count": len(semgrep)},
-                "osv": {"ok": True, "count": len(osv)},
-                "gitleaks": {"ok": True, "count": len(gitleaks)},
-            },
-        )
-
-        success = True
-        return response
-
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Repository clone timed out.")
     except HTTPException:
+        safe_rmtree(job_dir)
         raise
-
     except Exception as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Import from URL failed: {e}",
-        )
+        safe_rmtree(job_dir)
+        raise HTTPException(status_code=400, detail=f"Import from URL failed: {e}")
 
-    finally:
-        if not success:
-            safe_rmtree(job_dir)
+    scan_root = _maybe_use_single_top_folder(repo_dir)
+
+    semgrep, osv, gitleaks, findings = _scan_repo_dir(scan_root)
+    try:
+        async with await get_db() as db:
+            await db.execute(
+                "INSERT INTO jobs (job_id, project_name, scan_method) VALUES (?, ?, ?)",
+                (job_id, project_name, "url"),
+            )
+
+            rows = []
+
+            for f in findings:
+                engine = (f.metadata or {}).get("engine")
+                scanner = {"osv-scanner": "osv"}.get(engine, engine)
+
+                rule_id = (
+                    (f.metadata or {}).get("check_id")
+                    or (f.metadata or {}).get("rule")
+                    or (f.metadata or {}).get("osv_id")
+                    or f.title
+                )
+
+                file_path = f.location.path if f.location else None
+                line_number = f.location.start_line if f.location else None
+                message = f.description or f.title
+
+                rows.append(
+                    (
+                        str(uuid.uuid4()),
+                        job_id,
+                        rule_id,
+                        f.severity,
+                        f.category,
+                        file_path,
+                        line_number,
+                        None,
+                        scanner,
+                        message,
+                    )
+                )
+
+            await db.executemany(
+                "INSERT INTO findings (id, job_id, rule_id, severity, category, file_path, line_number, cwe, scanner, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+
+            await db.commit()
+
+    except Exception:
+        logger.exception("DB write failed for job %s", job_id)
+    return ScanResponse(
+        job_id=job_id,
+        project_name=project_name,
+        repo_path=str(scan_root),
+        findings=findings,
+        scanners={
+            "semgrep": {"ok": True, "count": len(semgrep)},
+            "osv": {"ok": True, "count": len(osv)},
+            "gitleaks": {"ok": True, "count": len(gitleaks)},
+        },
+    )
 
 
 @app.post("/fix", response_model=FixResponse)
