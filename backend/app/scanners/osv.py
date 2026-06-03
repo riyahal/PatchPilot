@@ -43,19 +43,23 @@ def run_osv_scanner(repo_dir: Path) -> List[Finding]:
         return []
 
     out: List[Finding] = []
+    unique_packages = set()
 
     results = data.get("results", []) or []
     for res in results:
         packages = res.get("packages", []) or []
         for pkg in packages:
+            pkg_name = (pkg.get("package", {}) or {}).get("name")
+            if pkg_name:
+                unique_packages.add(pkg_name)
+
             vulns = pkg.get("vulnerabilities", []) or []
             for v in vulns:
                 vuln_id = v.get("id", "OSV-UNKNOWN")
-                pkg_name = (pkg.get("package", {}) or {}).get("name", "pkg")
 
                 out.append(
                     Finding(
-                        id=f"osv:{vuln_id}:{pkg_name}",
+                        id=f"osv:{vuln_id}:{pkg_name or 'pkg'}",
                         category="dependency",
                         severity="HIGH",
                         title=f"Dependency vulnerability {vuln_id}",
@@ -74,15 +78,15 @@ def run_osv_scanner(repo_dir: Path) -> List[Finding]:
                     )
                 )
 
-    reachability_cache: dict[str, tuple[bool, str | None]] = {}
-    for finding in out:
-        pkg_name = (finding.metadata.get("package") or {}).get("name")
-        if not pkg_name:
-            continue
+    if unique_packages:
+        reachability_results = check_reachability(repo_dir, unique_packages)
 
-        if pkg_name not in reachability_cache:
-            reachability_cache[pkg_name] = check_reachability(repo_dir, pkg_name)
-        reachable, evidence = reachability_cache[pkg_name]
-        finding.reachability = Reachability(reachable=reachable, evidence=evidence)
+        for finding in out:
+            pkg_name = (finding.metadata.get("package") or {}).get("name")
+            if pkg_name and pkg_name in reachability_results:
+                reachable, evidence = reachability_results[pkg_name]
+                finding.reachability = Reachability(
+                    reachable=reachable, evidence=evidence
+                )
 
     return out

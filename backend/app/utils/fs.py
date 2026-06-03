@@ -32,12 +32,14 @@ def unzip_to_dir(zip_path: Path, out_dir: Path) -> None:
         shutil.rmtree(tmp)
 
 
-def check_reachability(repo_dir: Path, package_name: str) -> tuple[bool, str | None]:
+def check_reachability(
+    repo_dir: Path, package_names: set[str]
+) -> dict[str, tuple[bool, str | None]]:
     ignore_dirs = {
         ".git",
         "node_modules",
-        ".venv",
         "venv",
+        ".venv",
         "env",
         "__pycache__",
         "dist",
@@ -46,17 +48,25 @@ def check_reachability(repo_dir: Path, package_name: str) -> tuple[bool, str | N
     }
     target_exts = {".js", ".jsx", ".ts", ".tsx", ".py", ".cjs", ".mjs"}
 
-    patterns = [
-        rf"require\(['\"]{re.escape(package_name)}['\"]\)",
-        rf"from\s+['\"]{re.escape(package_name)}['\"]",
-        rf"import\s+['\"]{re.escape(package_name)}['\"]",
-        rf"import\s+{re.escape(package_name)}\b",
-        rf"from\s+{re.escape(package_name)}\s+import",
-    ]
-    compiled_patterns = [re.compile(p) for p in patterns]
+    results = {pkg: (False, None) for pkg in package_names}
+    remaining = set(package_names)
+
+    compiled_patterns = {}
+    for pkg in package_names:
+        patterns = [
+            rf"require\s*\(\s*['\"]{re.escape(pkg)}(?:/[^'\"]+)?['\"]\s*\)",
+            rf"from\s+['\"]{re.escape(pkg)}(?:/[^'\"]+)?['\"]",
+            rf"import\s+['\"]{re.escape(pkg)}(?:/[^'\"]+)?['\"]",
+            rf"import\s+{re.escape(pkg)}\b",
+            rf"from\s+{re.escape(pkg)}\b\s+import",
+        ]
+        compiled_patterns[pkg] = [re.compile(p) for p in patterns]
 
     for root, dirs, files in os.walk(repo_dir):
         dirs[:] = [d for d in dirs if d not in ignore_dirs]
+
+        if not remaining:
+            break
 
         for file in files:
             path = Path(root) / file
@@ -66,11 +76,25 @@ def check_reachability(repo_dir: Path, package_name: str) -> tuple[bool, str | N
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     for line_num, line in enumerate(f, 1):
-                        for pattern in compiled_patterns:
-                            if pattern.search(line):
-                                rel_path = path.relative_to(repo_dir)
-                                return True, f"Imported in {rel_path}: line {line_num}"
+                        found = []
+                        for pkg in remaining:
+                            for pattern in compiled_patterns[pkg]:
+                                if pattern.search(line):
+                                    rel_path = path.relative_to(repo_dir)
+                                    results[pkg] = (
+                                        True,
+                                        f"Imported in {rel_path}: line {line_num}",
+                                    )
+                                    found.append(pkg)
+                                    break
+                        for pkg in found:
+                            remaining.remove(pkg)
+                        if not remaining:
+                            break
             except (UnicodeDecodeError, PermissionError, OSError):
                 continue
 
-    return False, None
+            if not remaining:
+                break
+
+    return results
