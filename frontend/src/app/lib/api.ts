@@ -2,6 +2,23 @@ const API_BASE =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ||
   "http://localhost:8000";
 
+export type HealthResponse = {
+  ok: boolean;
+  status: "healthy" | "degraded";
+  scanners: Record<string, boolean>;
+};
+
+export async function getHealth() {
+  const res = await fetch(`${API_BASE}/health`);
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  return (await res.json()) as HealthResponse;
+}
+
+
 export type ScanResponse = {
   job_id: string;
   project_name: string;
