@@ -100,6 +100,26 @@ def _scan_repo_dir(repo_dir: Path):
     return semgrep, osv, gitleaks, findings
 
 
+def finding_key(f: Finding):
+    metadata = f.metadata or {}
+
+    rule_id = (
+        metadata.get("check_id")
+        or metadata.get("rule")
+        or metadata.get("osv_id")
+        or f.title
+    )
+
+    file_path = f.location.path if f.location else None
+    line_number = f.location.start_line if f.location else None
+
+    return (
+        rule_id,
+        file_path,
+        line_number,
+    )
+
+
 def github_zip_url(repo_url: str, ref: str = "main") -> str:
     repo_url = repo_url.strip()
     m = re.match(
@@ -292,6 +312,31 @@ def fix(req: FixRequest):
     return FixResponse(job_id=req.job_id, fixes=fixes)
 
 
+async def get_baseline_findings(job_id: str):
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            """
+            SELECT rule_id, file_path, line_number
+            FROM findings
+            WHERE job_id = ?
+            """,
+            (job_id,),
+        )
+        rows = await cursor.fetchall()
+
+        return {
+            (
+                row[0],
+                row[1],
+                row[2],
+            )
+            for row in rows
+        }
+    finally:
+        await db.close()
+
+
 @app.post("/verify", response_model=VerifyResponse)
 async def verify(job_id: str = Form(...)):
     job_dir = WORK_ROOT / job_id
@@ -300,12 +345,25 @@ async def verify(job_id: str = Form(...)):
         raise HTTPException(status_code=404, detail="Unknown job_id")
 
     repo_dir = _maybe_use_single_top_folder(repo_dir)
+
     result = verify_repo(repo_dir)
 
-    passed = 1 if result.ok else 0
+    baseline_findings = await get_baseline_findings(job_id)
 
-    # TODO: Implement post-fix rescan and finding diffing.
-    new_issues_introduced = 0
+    _, _, _, findings = _scan_repo_dir(repo_dir)
+
+    current_findings = {finding_key(f) for f in findings}
+
+    new_findings = current_findings - baseline_findings
+
+    new_issues_introduced = len(new_findings)
+    logger.info(
+        "Verify detected %d new findings for job %s",
+        new_issues_introduced,
+        job_id,
+    )
+
+    passed = 1 if result.ok and new_issues_introduced == 0 else 0
     try:
         db = await get_db()
         try:
