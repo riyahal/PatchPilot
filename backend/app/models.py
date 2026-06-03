@@ -10,6 +10,11 @@ class Location(BaseModel):
     end_line: Optional[int] = None
 
 
+class Reachability(BaseModel):
+    reachable: bool
+    evidence: Optional[str] = None
+
+
 class Finding(BaseModel):
     id: str
     category: str
@@ -18,6 +23,7 @@ class Finding(BaseModel):
     description: str = ""
     location: Optional[Location] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    reachability: Optional[Reachability] = None
 
 
 class ScanResponse(BaseModel):

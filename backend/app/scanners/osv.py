@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 from typing import List
 
-from ..models import Finding
+from ..models import Finding, Reachability
+from ..utils.fs import check_reachability
 from ..utils.exec import run_cmd
 
 
@@ -73,4 +74,14 @@ def run_osv_scanner(repo_dir: Path) -> List[Finding]:
                     )
                 )
 
+    for finding in out:
+        pkg_name = finding.metadata.get("package", {}).get("name")
+        if pkg_name:
+            reachable, evidence = check_reachability(repo_dir, pkg_name)
+            finding.reachability = Reachability(
+                reachable=reachable,
+                evidence=evidence
+            )
+
     return out
+    
