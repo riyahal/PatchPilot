@@ -70,8 +70,35 @@ export function DiffViewer({ diff, filename, className }: DiffViewerProps) {
   );
 
   const renderSplitView = () => {
-    const removed = diff.filter((l) => l.type === "removed" || l.type === "context");
-    const added = diff.filter((l) => l.type === "added" || l.type === "context");
+    const leftLines: (DiffLine | { type: "empty"; content: string; oldLine?: null })[] = [];
+    const rightLines: (DiffLine | { type: "empty"; content: string; newLine?: null })[] = [];
+    
+    let tempRemoved: DiffLine[] = [];
+    let tempAdded: DiffLine[] = [];
+
+    // Flushes grouped added/removed lines to the left and right columns
+    const flush = () => {
+      const maxLines = Math.max(tempRemoved.length, tempAdded.length);
+      for (let i = 0; i < maxLines; i++) {
+        leftLines.push(tempRemoved[i] || { type: "empty", content: " " });
+        rightLines.push(tempAdded[i] || { type: "empty", content: " " });
+      }
+      tempRemoved = [];
+      tempAdded = [];
+    };
+
+    diff.forEach((line) => {
+      if (line.type === "context") {
+        flush();
+        leftLines.push(line);
+        rightLines.push(line);
+      } else if (line.type === "removed") {
+        tempRemoved.push(line);
+      } else if (line.type === "added") {
+        tempAdded.push(line);
+      }
+    });
+    flush();
 
     return (
       <div className="grid grid-cols-2 divide-x divide-border overflow-x-auto">
@@ -81,18 +108,18 @@ export function DiffViewer({ diff, filename, className }: DiffViewerProps) {
           </div>
           <pre className="text-sm">
             <code className="font-mono">
-              {removed.map((line, index) => (
+              {leftLines.map((line, index) => (
                 <div
-                  key={index}
+                  key={`left-${index}`}
                   className={cn(
-                    "flex",
+                    "flex min-h-[1.25rem]",
                     line.type === "removed" && "bg-status-error-bg dark:bg-status-error-bg"
                   )}
                 >
                   <span className="inline-block w-12 text-right px-2 text-muted-foreground select-none border-r border-border">
                     {line.oldLine || " "}
                   </span>
-                  <span className="flex-1 px-2">{line.content}</span>
+                  <span className="flex-1 px-2">{line.content || " "}</span>
                 </div>
               ))}
             </code>
@@ -104,18 +131,18 @@ export function DiffViewer({ diff, filename, className }: DiffViewerProps) {
           </div>
           <pre className="text-sm">
             <code className="font-mono">
-              {added.map((line, index) => (
+              {rightLines.map((line, index) => (
                 <div
-                  key={index}
+                  key={`right-${index}`}
                   className={cn(
-                    "flex",
+                    "flex min-h-[1.25rem]",
                     line.type === "added" && "bg-status-success-bg dark:bg-status-success-bg"
                   )}
                 >
                   <span className="inline-block w-12 text-right px-2 text-muted-foreground select-none border-r border-border">
                     {line.newLine || " "}
                   </span>
-                  <span className="flex-1 px-2">{line.content}</span>
+                  <span className="flex-1 px-2">{line.content || " "}</span>
                 </div>
               ))}
             </code>
