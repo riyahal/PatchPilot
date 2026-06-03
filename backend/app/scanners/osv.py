@@ -49,11 +49,13 @@ def run_osv_scanner(repo_dir: Path) -> List[Finding]:
     for res in results:
         packages = res.get("packages", []) or []
         for pkg in packages:
+            vulns = pkg.get("vulnerabilities", []) or []
+            if not vulns:
+                continue
             pkg_name = (pkg.get("package", {}) or {}).get("name")
             if pkg_name:
                 unique_packages.add(pkg_name)
 
-            vulns = pkg.get("vulnerabilities", []) or []
             for v in vulns:
                 vuln_id = v.get("id", "OSV-UNKNOWN")
 
