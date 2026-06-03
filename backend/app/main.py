@@ -293,7 +293,7 @@ def fix(req: FixRequest):
 
 
 @app.post("/verify", response_model=VerifyResponse)
-def verify(job_id: str = Form(...)):
+async def verify(job_id: str = Form(...)):
     job_dir = WORK_ROOT / job_id
     repo_dir = job_dir / "repo"
     if not repo_dir.exists():
@@ -301,6 +301,32 @@ def verify(job_id: str = Form(...)):
 
     repo_dir = _maybe_use_single_top_folder(repo_dir)
     result = verify_repo(repo_dir)
+
+    passed = 1 if result.ok else 0
+
+    # TODO: Implement post-fix rescan and finding diffing.
+    new_issues_introduced = 0
+    try:
+        db = await get_db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO verify_outcomes
+                (id, job_id, passed, new_issues_introduced)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    job_id,
+                    passed,
+                    new_issues_introduced,
+                ),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+    except Exception:
+        logger.exception("Failed to persist verify outcome for job %s", job_id)
     return result
 
 

@@ -29,6 +29,15 @@ async def init_db():
                 created_at   TEXT DEFAULT (datetime('now'))
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS verify_outcomes (
+                id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                passed INTEGER NOT NULL,
+                new_issues_introduced INTEGER DEFAULT 0,
+                verified_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
         await db.commit()
 
 
