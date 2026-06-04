@@ -351,16 +351,20 @@ def evidence_pack(job_id: str = Form(...), project_name: str = Form("project")):
 
 @app.get("/jobs/{job_id}/findings")
 async def get_findings(job_id: str):
-    async with await get_db() as db:
+    db = await get_db()
+
+    try:
         # Verify the job exists
         cur = await db.execute(
-            "SELECT job_id FROM jobs WHERE job_id = ?", (job_id,)
+            "SELECT job_id FROM jobs WHERE job_id = ?",
+            (job_id,),
         )
         job_row = await cur.fetchone()
 
         if job_row is None:
             raise HTTPException(
-                status_code=404, detail=f"No job found with id '{job_id}'"
+                status_code=404,
+                detail=f"No job found with id '{job_id}'",
             )
 
         cur = await db.execute(
@@ -373,10 +377,15 @@ async def get_findings(job_id: str):
             """,
             (job_id,),
         )
+
         columns = [col[0] for col in cur.description]
         rows = await cur.fetchall()
 
+    finally:
+        await db.close()
+
     findings = [dict(zip(columns, row)) for row in rows]
+
     return {
         "job_id": job_id,
         "finding_count": len(findings),
@@ -386,16 +395,19 @@ async def get_findings(job_id: str):
 
 @app.get("/jobs/{job_id}/verify")
 async def get_verify(job_id: str):
-    async with await get_db() as db:
-        # Verify the job exists
+    db = await get_db()
+
+    try:
         cur = await db.execute(
-            "SELECT job_id FROM jobs WHERE job_id = ?", (job_id,)
+            "SELECT job_id FROM jobs WHERE job_id = ?",
+            (job_id,),
         )
         job_row = await cur.fetchone()
 
         if job_row is None:
             raise HTTPException(
-                status_code=404, detail=f"No job found with id '{job_id}'"
+                status_code=404,
+                detail=f"No job found with id '{job_id}'",
             )
 
         cur = await db.execute(
@@ -408,8 +420,12 @@ async def get_verify(job_id: str):
             """,
             (job_id,),
         )
+
         columns = [col[0] for col in cur.description]
         row = await cur.fetchone()
+
+    finally:
+        await db.close()
 
     if row is None:
         raise HTTPException(
