@@ -142,3 +142,14 @@ export async function getTrends(limit = 6) {
   if (!res.ok) throw new Error(await res.text());
   return (await res.json()) as TrendData[];
 }
+
+export type CweData = {
+  name: string;
+  value: number;
+};
+
+export async function getCweDistribution() {
+  const res = await fetch(`${API_BASE}/cwe-distribution`);
+  if (!res.ok) throw new Error(await res.text());
+  return (await res.json()) as CweData[];
+}

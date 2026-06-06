@@ -75,3 +75,32 @@ async def get_trend_data(limit: int = 6):
             )
 
         return formatted_data
+
+
+async def get_cwe_distribution():
+    """Fetches the vulnerability distribution for the most recent scan."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+
+        cursor = await db.execute(
+            "SELECT job_id FROM jobs ORDER BY created_at DESC LIMIT 1"
+        )
+        latest_job = await cursor.fetchone()
+
+        if not latest_job:
+            return []
+
+        job_id = latest_job["job_id"]
+        cursor = await db.execute(
+            """
+            SELECT category as name, COUNT(id) as value
+            FROM findings
+            WHERE job_id = ?
+            GROUP BY category
+            ORDER BY value DESC
+        """,
+            (job_id,),
+        )
+
+        rows = await cursor.fetchall()
+        return [{"name": row["name"], "value": row["value"]} for row in rows]

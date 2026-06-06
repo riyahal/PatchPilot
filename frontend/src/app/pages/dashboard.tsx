@@ -5,6 +5,7 @@ import { scanRepoUrl, scanZip } from "../lib/api";
 import { saveLastScan } from "../lib/scan-store";
 import { Button } from "../components/ui/button";
 import { TrendChart } from "../components/trend-chart";
+import { CweChart } from "../components/cwe-chart"
 import {
   Card,
   CardContent,
@@ -348,7 +349,10 @@ export function Dashboard() {
           </div>
         </CardContent>
       </Card>
-        <TrendChart />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+          <TrendChart />
+          <CweChart />
+        </div>
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <div>

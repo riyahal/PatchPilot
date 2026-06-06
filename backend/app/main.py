@@ -15,7 +15,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from .db import init_db, get_db, get_trend_data
+from .db import init_db, get_db, get_trend_data, get_cwe_distribution
 from .models import ScanResponse, Finding, FixRequest, FixResponse, VerifyResponse
 from .remediation.engine import propose_fixes
 from .reports.evidence_pack import build_evidence_pack
@@ -532,4 +532,11 @@ def delete_job(job_id: str):
 async def get_trends_endpoint(limit: int = 6):
     """Fetches historical trend data for the frontend dashboard."""
     data = await get_trend_data(limit)
+    return data
+
+
+@app.get("/cwe-distribution")
+async def cwe_distribution_endpoint():
+    """Fetches the vulnerability distribution for the frontend donut chart."""
+    data = await get_cwe_distribution()
     return data
