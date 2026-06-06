@@ -107,6 +107,7 @@ async def get_cwe_distribution():
         rows = await cursor.fetchall()
         return [{"name": row["name"], "value": row["value"]} for row in rows]
 
+
 async def get_dependency_diff():
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -157,5 +158,5 @@ async def get_dependency_diff():
         return {
             "introduced": introduced,
             "resolved": resolved,
-            "persistent": persistent
+            "persistent": persistent,
         }

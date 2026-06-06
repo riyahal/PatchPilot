@@ -15,7 +15,13 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from .db import init_db, get_db, get_trend_data, get_cwe_distribution, get_dependency_diff
+from .db import (
+    init_db,
+    get_db,
+    get_trend_data,
+    get_cwe_distribution,
+    get_dependency_diff,
+)
 from .models import ScanResponse, Finding, FixRequest, FixResponse, VerifyResponse
 from .remediation.engine import propose_fixes
 from .reports.evidence_pack import build_evidence_pack
@@ -226,7 +232,7 @@ async def scan(
                 pkg_info = (f.metadata or {}).get("package") or {}
                 pkg_name = pkg_info.get("name")
                 pkg_version = pkg_info.get("version")
-                
+
                 rows.append(
                     (
                         str(uuid.uuid4()),
@@ -314,11 +320,11 @@ async def scan_url(
                 file_path = f.location.path if f.location else None
                 line_number = f.location.start_line if f.location else None
                 message = f.description or f.title
-                
+
                 pkg_info = (f.metadata or {}).get("package") or {}
                 pkg_name = pkg_info.get("name")
                 pkg_version = pkg_info.get("version")
-                
+
                 rows.append(
                     (
                         str(uuid.uuid4()),
