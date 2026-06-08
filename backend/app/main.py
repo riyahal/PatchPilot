@@ -75,11 +75,11 @@ def health():
         "gitleaks": shutil.which("gitleaks") is not None,
     }
 
-    status = "ok" if all(scanners.values()) else "degraded"
+    healthy = all(scanners.values())
 
     return {
-        "ok": True,
-        "status": status,
+        "ok": healthy,
+        "status": "healthy" if healthy else "degraded",
         "scanners": scanners,
     }
 
