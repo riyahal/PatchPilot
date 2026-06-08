@@ -32,6 +32,7 @@ from .reports.evidence_pack import build_evidence_pack
 from .sandbox.verify import verify_repo
 from .scanners.gitleaks import run_gitleaks
 from .scanners.osv import run_osv_scanner
+from .scanners.entropy import run_entropy
 from .scanners.semgrep import run_semgrep
 from .utils.fs import ensure_dir, safe_rmtree, unzip_to_dir
 
@@ -99,15 +100,17 @@ def _scan_repo_dir(repo_dir: Path):
     semgrep = run_semgrep(repo_dir)
     osv = run_osv_scanner(repo_dir)
     gitleaks = run_gitleaks(repo_dir)
+    entropy = run_entropy(repo_dir)
 
     findings: List[Finding] = []
     findings.extend(semgrep)
     findings.extend(osv)
     findings.extend(gitleaks)
+    findings.extend(entropy)
 
     findings = _prioritize_findings(findings)
 
-    return semgrep, osv, gitleaks, findings
+    return semgrep, osv, gitleaks, entropy, findings
 
 
 def finding_key(f: Finding):
@@ -211,7 +214,7 @@ async def scan(
 
     scan_root = _maybe_use_single_top_folder(repo_dir)
 
-    semgrep, osv, gitleaks, findings = _scan_repo_dir(scan_root)
+    semgrep, osv, gitleaks, entropy, findings = _scan_repo_dir(scan_root)
 
     try:
         async with await get_db() as db:
@@ -269,6 +272,7 @@ async def scan(
             "semgrep": {"ok": True, "count": len(semgrep)},
             "osv": {"ok": True, "count": len(osv)},
             "gitleaks": {"ok": True, "count": len(gitleaks)},
+            "entropy": {"ok": True, "count": len(entropy)},
         },
     )
 
@@ -301,9 +305,8 @@ async def scan_url(
 
     scan_root = _maybe_use_single_top_folder(repo_dir)
 
-    semgrep, osv, gitleaks, findings = _scan_repo_dir(scan_root)
+    semgrep, osv, gitleaks, entropy, findings = _scan_repo_dir(scan_root)
 
-    # NEW: Save to Database so the Trend Chart works!
     try:
         db = await get_db()
         try:
@@ -365,6 +368,7 @@ async def scan_url(
             "semgrep": {"ok": True, "count": len(semgrep)},
             "osv": {"ok": True, "count": len(osv)},
             "gitleaks": {"ok": True, "count": len(gitleaks)},
+            "entropy": {"ok": True, "count": len(entropy)},
         },
     )
 
@@ -420,7 +424,7 @@ async def verify(job_id: str = Form(...)):
 
     baseline_findings = await get_baseline_findings(job_id)
 
-    _, _, _, findings = _scan_repo_dir(repo_dir)
+    _, _, _, _, findings = _scan_repo_dir(repo_dir)
 
     current_findings = {finding_key(f) for f in findings}
 
