@@ -184,7 +184,6 @@ async def download_to_path(url: str, dest_path: Path) -> None:
                         status_code=400,
                         detail="Redirect response missing Location header.",
                     )
-                current_url = str(httpx.URL(current_url).copy_with()).rstrip("/")
                 current_url = str(r.headers["location"])
                 continue
 
