@@ -58,17 +58,32 @@ def load_findings(db_path: str) -> pd.DataFrame:
 
 
 def reconstruct_features(row: pd.Series) -> dict:
+    file_path = row["file_path"]
+
+    if pd.isna(file_path):
+        file_path = ""
+
+    cwe = row["cwe"]
+
+    if pd.isna(cwe):
+        cwe = "unknown"
+
     raw_finding = {
         "id": row["rule_id"],
         "severity": row["severity"],
-        "location": {"path": row["file_path"] or ""},
-        "metadata": {"cwe_category": row["cwe"] or "unknown"},
+        "location": {"path": str(file_path)},
+        "metadata": {"cwe_category": str(cwe)},
     }
-    return extract_features(raw_finding, scanner_name=row["scanner"] or "unknown")
+
+    return extract_features(
+        raw_finding,
+        scanner_name=str(row["scanner"]) if pd.notna(row["scanner"]) else "unknown",
+    )
 
 
 def build_feature_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     feature_rows = []
+
     for _, row in df.iterrows():
         if "features" in df.columns and pd.notna(row.get("features")):
             try:
@@ -77,9 +92,20 @@ def build_feature_dataframe(df: pd.DataFrame) -> pd.DataFrame:
                 features = reconstruct_features(row)
         else:
             features = reconstruct_features(row)
-        feature_rows.append(features)
-    return pd.DataFrame(feature_rows)
 
+        feature_rows.append(features)
+
+    feature_df = pd.DataFrame(feature_rows)
+
+    for col in [
+        "cwe_category",
+        "file_extension",
+        "scanner",
+        "rule_id_prefix",
+    ]:
+        feature_df[col] = feature_df[col].fillna("unknown").astype(str)
+
+    return feature_df
 
 def prepare_dataset(df: pd.DataFrame):
     feature_df = build_feature_dataframe(df)
@@ -96,12 +122,16 @@ def prepare_dataset(df: pd.DataFrame):
 
     # Drop raw_severity - it leaks the target label
     feature_df = feature_df.drop(columns=["raw_severity"], errors="ignore")
+    feature_df["is_test_file"] = feature_df["is_test_file"].astype(int)
 
     return feature_df, y.astype(int)
 
 
 def train_model(X: pd.DataFrame, y: pd.Series, test_size: float = 0.2) -> Pipeline:
-    categorical_cols = [c for c in X.columns if X[c].dtype == "object"]
+    categorical_cols = X.select_dtypes(
+        include=["object", "string"]
+    ).columns.tolist()
+    
     numeric_cols = [c for c in X.columns if c not in categorical_cols]
 
     preprocessor = ColumnTransformer(
