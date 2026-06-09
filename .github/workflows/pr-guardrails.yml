@@ -1,8 +1,6 @@
 name: PR Guardrails
 
 on:
-  pull_request:
-    types: [opened, edited, synchronize, reopened]
   pull_request_target:
     types: [opened, edited, synchronize, reopened]
 
@@ -17,6 +15,12 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
       - name: Validate PR Template & Auto-Label
         uses: actions/github-script@v7
         with:
@@ -26,7 +30,6 @@ jobs:
             const prNumber = context.issue.number;
             const repoInfo = context.repo;
 
-            // --- 1. AUTO-LABELING ---
             const labelsToAdd = new Set();
             
             try {
@@ -36,7 +39,7 @@ jobs:
             const isChecked = (text) => prBody.includes(`- [x] ${text}`) || prBody.includes(`- [X] ${text}`);
             
             if (isChecked("Bug fix")) labelsToAdd.add('bug');
-            if (isChecked("New feature")) labelsToAdd.add('enhancement');
+            if (isChecked("New feature")) labelsToAdd.add('feature');
             if (isChecked("Refactor")) labelsToAdd.add('refactor');
             if (isChecked("Documentation")) labelsToAdd.add('documentation');
             if (isChecked("Tests only")) labelsToAdd.add('test');
@@ -76,7 +79,6 @@ jobs:
               } catch (error) {}
             }
 
-            // --- 2. STRICT TEMPLATE VALIDATION ---
             const hasLinkedIssue = prBody.includes("Closes #");
 
             const requiredPhrases = [
@@ -131,7 +133,6 @@ jobs:
 
             const isValid = hasLinkedIssue && hasAllMandatoryText && hasDescContent && hasTestContent;
 
-            // --- 3. THE HARD FAIL & CLEANUP ---
             if (!isValid) {
               console.log("Validation failed. Adding needs-work and failing action.");
               await github.rest.issues.addLabels({
