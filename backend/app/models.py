@@ -25,6 +25,7 @@ class Finding(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     reachability: Optional[Reachability] = None
     features: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    ml_score: Optional[float] = None
 
 
 class ScanResponse(BaseModel):

@@ -27,6 +27,7 @@ from .db import (
     upsert_contributor_stat,
 )
 from .models import ScanResponse, Finding, FixRequest, FixResponse, VerifyResponse
+from app.ml.ranker import load_ranker, scoring_function
 from .remediation.engine import propose_fixes
 from .reports.evidence_pack import build_evidence_pack
 from .sandbox.verify import verify_repo
@@ -37,6 +38,7 @@ from .scanners.semgrep import run_semgrep
 from .utils.fs import ensure_dir, safe_rmtree, unzip_to_dir
 
 _MAX_UPLOAD_MB_RAW = os.environ.get("MAX_UPLOAD_MB")
+RANKER = load_ranker()
 
 try:
     MAX_UPLOAD_MB = int(_MAX_UPLOAD_MB_RAW) if _MAX_UPLOAD_MB_RAW else 100
@@ -108,7 +110,15 @@ def _scan_repo_dir(repo_dir: Path):
     findings.extend(gitleaks)
     findings.extend(entropy)
 
-    findings = _prioritize_findings(findings)
+    findings = scoring_function(findings, RANKER)
+
+    if RANKER:
+        findings.sort(
+            key=lambda f: getattr(f, "ml_score", 0.0),
+            reverse=True,
+        )
+    else:
+        findings = _prioritize_findings(findings)
 
     return semgrep, osv, gitleaks, entropy, findings
 
