@@ -1,12 +1,14 @@
 name: PR Guardrails
 
 on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
   pull_request_target:
     types: [opened, edited, synchronize, reopened]
 
 permissions:
-  pull-requests: write 
-  contents: read       
+  pull-requests: write
+  contents: read
   issues: write
 
 jobs:
@@ -15,12 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-        ref: ${{ github.event.pull_request.head.sha }}
-        fetch-depth: 0 
-
       - name: Validate PR Template & Auto-Label
         uses: actions/github-script@v7
         with:
@@ -39,17 +35,14 @@ jobs:
             
             const isChecked = (text) => prBody.includes(`- [x] ${text}`) || prBody.includes(`- [X] ${text}`);
             
-            // Type of Change Labels
             if (isChecked("Bug fix")) labelsToAdd.add('bug');
             if (isChecked("New feature")) labelsToAdd.add('enhancement');
             if (isChecked("Refactor")) labelsToAdd.add('refactor');
             if (isChecked("Documentation")) labelsToAdd.add('documentation');
             if (isChecked("Tests only")) labelsToAdd.add('test');
             
-            // ML Tier Labels
             if (isChecked("ML model") || isChecked("Tier 1") || isChecked("Tier 2") || isChecked("Tier 3")) labelsToAdd.add('ml');
             
-            // Stack Affected Labels
             if (isChecked("Backend")) labelsToAdd.add('backend');
             if (isChecked("Frontend")) labelsToAdd.add('frontend');
             if (isChecked("Both")) {
@@ -57,7 +50,6 @@ jobs:
               labelsToAdd.add('frontend');
             }
             
-            // Textual Stack Check
             const backendSplit = prBody.split("### Backend");
             if (backendSplit.length > 1) {
               const backendText = backendSplit[1].split("###")[0] || "";
@@ -121,7 +113,6 @@ jobs:
             
             const hasAllMandatoryText = requiredPhrases.every(phrase => prBody.includes(phrase));
 
-            // Verify written explanations exist (escaped regex to protect YAML parser)
             let hasDescContent = false;
             const descSplit = prBody.split("## What this PR does");
             if (descSplit.length > 1) {
@@ -175,7 +166,6 @@ jobs:
                 console.log("Removed 'needs-work' label.");
               } catch (error) {}
 
-              // Find and delete the warning comment
               try {
                 const comments = await github.rest.issues.listComments({
                   ...repoInfo,
