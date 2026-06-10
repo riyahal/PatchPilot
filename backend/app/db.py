@@ -1,6 +1,7 @@
-import aiosqlite
-import os
 import datetime
+import os
+
+import aiosqlite
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "patchpilot.db")
 

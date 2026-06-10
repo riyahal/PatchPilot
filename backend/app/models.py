@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
 
 
 class Location(BaseModel):
@@ -25,6 +26,7 @@ class Finding(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     reachability: Optional[Reachability] = None
     features: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    ml_score: Optional[float] = None
 
 
 class ScanResponse(BaseModel):

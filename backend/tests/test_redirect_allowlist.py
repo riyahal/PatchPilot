@@ -1,16 +1,11 @@
-"""
-Tests for issue #59 – enforce redirect allowlist for repository downloads.
-
-Verifies that download_to_path blocks redirects to disallowed hosts (SSRF
-prevention) and correctly follows redirects within the allowlist.
-"""
-
-import pytest
-import httpx
 from unittest.mock import AsyncMock, patch
 
+import httpx
+
 from app.main import download_to_path, ALLOWED_REDIRECT_HOSTS, MAX_REDIRECTS
+import pytest
 from fastapi import HTTPException
+
 
 
 # ---------------------------------------------------------------------------
