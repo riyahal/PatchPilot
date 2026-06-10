@@ -8,12 +8,8 @@ from ..models import Finding, Location
 from ..utils.exec import run_cmd
 from ..utils.ml_features import extract_features
 
-SEMGREP_CONFIGS = [
-    "p/ci",
-    "p/dockerfile",
-    "p/terraform",
-    "p/github-actions"
-]
+SEMGREP_CONFIGS = ["p/ci", "p/dockerfile", "p/terraform", "p/github-actions"]
+
 
 def run_semgrep(repo_dir: Path) -> List[Finding]:
     cmd = ["semgrep"]
