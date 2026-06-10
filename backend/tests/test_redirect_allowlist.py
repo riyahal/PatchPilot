@@ -1,15 +1,10 @@
-
-
 import pytest
 import httpx
 from unittest.mock import AsyncMock, patch
 
 
-
 from app.main import download_to_path, ALLOWED_REDIRECT_HOSTS, MAX_REDIRECTS
 from fastapi import HTTPException
-
-
 
 
 # ---------------------------------------------------------------------------
