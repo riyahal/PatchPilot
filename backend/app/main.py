@@ -9,31 +9,30 @@ import uuid
 from pathlib import Path
 from typing import List
 
-
 import httpx
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-
 from pydantic import BaseModel
 
+from app.ml.ranker import load_ranker, scoring_function
+
 from .db import (
-    init_db,
-    get_db,
-    get_trend_data,
     get_cwe_distribution,
+    get_db,
     get_dependency_diff,
     get_leaderboard_stats,
+    get_trend_data,
+    init_db,
     upsert_contributor_stat,
 )
-from .models import ScanResponse, Finding, FixRequest, FixResponse, VerifyResponse
-from app.ml.ranker import load_ranker, scoring_function
+from .models import Finding, FixRequest, FixResponse, ScanResponse, VerifyResponse
 from .remediation.engine import propose_fixes
 from .reports.evidence_pack import build_evidence_pack
 from .sandbox.verify import verify_repo
+from .scanners.entropy import run_entropy
 from .scanners.gitleaks import run_gitleaks
 from .scanners.osv import run_osv_scanner
-from .scanners.entropy import run_entropy
 from .scanners.semgrep import run_semgrep
 from .utils.fs import ensure_dir, safe_rmtree, unzip_to_dir
 

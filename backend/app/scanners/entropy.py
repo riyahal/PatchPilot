@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import math
 import re
-from pathlib import Path
 from collections import Counter
+from pathlib import Path
 from typing import List
+
 from ..models import Finding, Location
 from ..utils.ml_features import extract_features
 

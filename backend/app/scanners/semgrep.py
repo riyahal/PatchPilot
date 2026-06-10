@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import List
+
 from ..models import Finding, Location
 from ..utils.exec import run_cmd
-
 from ..utils.ml_features import extract_features
 
 SEMGRP_CONFIG = "p/ci"

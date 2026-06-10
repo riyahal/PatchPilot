@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List
 
 from ..models import Fix
-from .templates import secret_remediation_note, dependency_upgrade_note
+from .templates import dependency_upgrade_note, secret_remediation_note
 
 
 def propose_fixes(repo_dir: Path, finding_ids: List[str]) -> List[Fix]:

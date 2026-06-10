@@ -1,9 +1,9 @@
 from pathlib import Path
+
 import joblib
 import pandas as pd
 
 from app.utils.ml_features import extract_features
-
 
 MODEL_PATH = Path(__file__).parent / "models" / "ranker.pkl"
 
