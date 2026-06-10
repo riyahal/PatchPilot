@@ -15,6 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from app.ml.ranker import load_ranker, scoring_function
+
 from .db import (
     get_cwe_distribution,
     get_db,
@@ -28,12 +30,14 @@ from .models import Finding, FixRequest, FixResponse, ScanResponse, VerifyRespon
 from .remediation.engine import propose_fixes
 from .reports.evidence_pack import build_evidence_pack
 from .sandbox.verify import verify_repo
+from .scanners.entropy import run_entropy
 from .scanners.gitleaks import run_gitleaks
 from .scanners.osv import run_osv_scanner
 from .scanners.semgrep import run_semgrep
 from .utils.fs import ensure_dir, safe_rmtree, unzip_to_dir
 
 _MAX_UPLOAD_MB_RAW = os.environ.get("MAX_UPLOAD_MB")
+RANKER = load_ranker()
 
 try:
     MAX_UPLOAD_MB = int(_MAX_UPLOAD_MB_RAW) if _MAX_UPLOAD_MB_RAW else 100
@@ -73,11 +77,11 @@ def health():
         "gitleaks": shutil.which("gitleaks") is not None,
     }
 
-    status = "ok" if all(scanners.values()) else "degraded"
+    healthy = all(scanners.values())
 
     return {
-        "ok": True,
-        "status": status,
+        "ok": healthy,
+        "status": "healthy" if healthy else "degraded",
         "scanners": scanners,
     }
 
@@ -97,15 +101,25 @@ def _scan_repo_dir(repo_dir: Path):
     semgrep = run_semgrep(repo_dir)
     osv = run_osv_scanner(repo_dir)
     gitleaks = run_gitleaks(repo_dir)
+    entropy = run_entropy(repo_dir)
 
     findings: List[Finding] = []
     findings.extend(semgrep)
     findings.extend(osv)
     findings.extend(gitleaks)
+    findings.extend(entropy)
 
-    findings = _prioritize_findings(findings)
+    findings = scoring_function(findings, RANKER)
 
-    return semgrep, osv, gitleaks, findings
+    if RANKER:
+        findings.sort(
+            key=lambda f: getattr(f, "ml_score", 0.0),
+            reverse=True,
+        )
+    else:
+        findings = _prioritize_findings(findings)
+
+    return semgrep, osv, gitleaks, entropy, findings
 
 
 def finding_key(f: Finding):
@@ -182,7 +196,6 @@ async def download_to_path(url: str, dest_path: Path) -> None:
                         status_code=400,
                         detail="Redirect response missing Location header.",
                     )
-                current_url = str(httpx.URL(current_url).copy_with()).rstrip("/")
                 current_url = str(r.headers["location"])
                 continue
 
@@ -256,7 +269,7 @@ async def scan(
 
     scan_root = _maybe_use_single_top_folder(repo_dir)
 
-    semgrep, osv, gitleaks, findings = _scan_repo_dir(scan_root)
+    semgrep, osv, gitleaks, entropy, findings = _scan_repo_dir(scan_root)
 
     try:
         async with await get_db() as db:
@@ -314,6 +327,7 @@ async def scan(
             "semgrep": {"ok": True, "count": len(semgrep)},
             "osv": {"ok": True, "count": len(osv)},
             "gitleaks": {"ok": True, "count": len(gitleaks)},
+            "entropy": {"ok": True, "count": len(entropy)},
         },
     )
 
@@ -346,9 +360,8 @@ async def scan_url(
 
     scan_root = _maybe_use_single_top_folder(repo_dir)
 
-    semgrep, osv, gitleaks, findings = _scan_repo_dir(scan_root)
+    semgrep, osv, gitleaks, entropy, findings = _scan_repo_dir(scan_root)
 
-    # NEW: Save to Database so the Trend Chart works!
     try:
         db = await get_db()
         try:
@@ -410,6 +423,7 @@ async def scan_url(
             "semgrep": {"ok": True, "count": len(semgrep)},
             "osv": {"ok": True, "count": len(osv)},
             "gitleaks": {"ok": True, "count": len(gitleaks)},
+            "entropy": {"ok": True, "count": len(entropy)},
         },
     )
 
@@ -465,7 +479,7 @@ async def verify(job_id: str = Form(...)):
 
     baseline_findings = await get_baseline_findings(job_id)
 
-    _, _, _, findings = _scan_repo_dir(repo_dir)
+    _, _, _, _, findings = _scan_repo_dir(repo_dir)
 
     current_findings = {finding_key(f) for f in findings}
 

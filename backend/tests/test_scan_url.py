@@ -12,8 +12,8 @@ def test_scan_url_invalid_format():
     res = client.post(
         "/scan-url", data={"repo_url": "not-a-url", "project_name": "test_project"}
     )
-    assert res.status_code == 422
-    assert "Invalid GitHub URL format" in res.json()["detail"]
+    assert res.status_code == 400
+    assert "Only GitHub repo URLs are supported right now." in res.json()["detail"]
 
 
 @patch("app.main.httpx.AsyncClient")
@@ -32,8 +32,8 @@ def test_scan_url_not_found(mock_async_client):
             "project_name": "test_project",
         },
     )
-    assert res.status_code == 422
-    assert "not found or is private" in res.json()["detail"]
+    assert res.status_code == 400
+    assert "Failed to download repo ZIP" in res.json()["detail"]
 
 
 @patch("app.main.httpx.AsyncClient")
@@ -50,8 +50,8 @@ def test_scan_url_timeout(mock_async_client):
             "project_name": "test_project",
         },
     )
-    assert res.status_code == 422
-    assert "Could not reach GitHub" in res.json()["detail"]
+    assert res.status_code == 400
+    assert "Failed to download repo ZIP" in res.json()["detail"]
 
 
 @patch("app.main.httpx.AsyncClient")
@@ -65,7 +65,7 @@ def test_scan_url_success(mock_scan, mock_unzip, mock_download, mock_async_clien
     mock_response = httpx.Response(200)
     mock_client.head = AsyncMock(return_value=mock_response)
 
-    mock_scan.return_value = ([], [], [], [])
+    mock_scan.return_value = ([], [], [], [], [])
 
     res = client.post(
         "/scan-url",

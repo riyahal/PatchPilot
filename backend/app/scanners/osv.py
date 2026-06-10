@@ -11,6 +11,18 @@ from ..utils.fs import check_reachability
 from ..utils.ml_features import extract_features
 
 
+def map_cvss_to_severity(score):
+    if score >= 9:
+        return "CRITICAL"
+    elif score >= 7:
+        return "HIGH"
+    elif score >= 4:
+        return "MEDIUM"
+    elif score > 0:
+        return "LOW"
+    return "INFO"
+
+
 def run_osv_scanner(repo_dir: Path) -> List[Finding]:
     """
     Runs osv-scanner in repo_dir and returns ONLY real vulnerability findings.
@@ -64,6 +76,24 @@ def run_osv_scanner(repo_dir: Path) -> List[Finding]:
                 finding_id = f"osv:{vuln_id}:{pkg_name or 'pkg'}"
                 severity = "HIGH"
 
+                try:
+                    severity_data = v.get("severity", [])
+
+                    if severity_data:
+                        score_text = severity_data[0].get("score", "")
+
+                        import re
+
+                        match = re.search(
+                            r"CVSS:3\.[01]/.*?/([0-9]+\.[0-9]+)$", score_text
+                        )
+
+                        if match:
+                            cvss_score = float(match.group(1))
+                            severity = map_cvss_to_severity(cvss_score)
+
+                except Exception:
+                    pass
                 raw_data_for_extractor = {
                     "id": finding_id,
                     "severity": severity,
