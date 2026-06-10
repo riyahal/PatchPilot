@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 import sys
-import json
 from pathlib import Path
 
 import joblib
@@ -19,7 +19,6 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR))
 
 from app.utils.ml_features import extract_features  # noqa: E402
-
 
 SEVERITY_MAP = {
     "INFO": 0,
