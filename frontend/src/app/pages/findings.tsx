@@ -6,7 +6,10 @@ import {
   Plus,
   CheckCircle2,
   XCircle,
+  Loader2,
+  AlertTriangle,
 } from "lucide-react";
+import { downloadAuditReport } from "../lib/api";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -40,6 +43,73 @@ import type { Finding } from "../data/sample-data";
 import { loadLastScan } from "../lib/scan-store";
 import { mapBackendFindingToUi } from "../lib/mappers";
 import { cn } from "../components/ui/utils";
+
+function ExportReportButton({ scanId }: { scanId: string }) {
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
+
+  const handleDownload = async () => {
+    setIsGenerating(true);
+    setStatus("idle");
+
+    try {
+      const { blob, filename } = await downloadAuditReport(scanId);
+      
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+
+      setStatus("success");
+      setTimeout(() => setStatus("idle"), 4000);
+    } catch (error) {
+      setStatus("error");
+      setTimeout(() => setStatus("idle"), 5000);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  return (
+    <div className="relative inline-block text-left">
+      <Button
+        variant="outline"
+        onClick={handleDownload}
+        disabled={isGenerating}
+        className="flex items-center gap-2"
+      >
+        {isGenerating ? (
+          <Loader2 className="w-4 h-4 animate-spin" />
+        ) : (
+          <Download className="w-4 h-4" />
+        )}
+        {isGenerating ? "Generating..." : "Export Audit PDF"}
+      </Button>
+
+      {status === "success" && (
+        <div className="absolute top-full right-0 mt-2 z-50 flex items-center gap-2 p-3 bg-slate-900 border border-emerald-800 text-slate-200 shadow-xl rounded min-w-[220px] animate-in fade-in slide-in-from-top-2">
+          <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+          <div className="flex flex-col">
+            <span className="text-xs font-semibold text-slate-200">Report Downloaded</span>
+          </div>
+        </div>
+      )}
+
+      {status === "error" && (
+        <div className="absolute top-full right-0 mt-2 z-50 flex items-center gap-2 p-3 bg-slate-900 border border-rose-800 text-slate-200 shadow-xl rounded min-w-[220px] animate-in fade-in slide-in-from-top-2">
+          <AlertTriangle className="w-4 h-4 text-rose-500 shrink-0" />
+          <div className="flex flex-col">
+            <span className="text-xs font-semibold text-slate-200">Export Failed</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function Findings() {
   const navigate = useNavigate();
@@ -129,11 +199,14 @@ export function Findings() {
 
   return (
     <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 max-w-7xl pb-20 md:pb-8">
-      <div className="mb-6">
-        <h1 className="mb-2">Findings</h1>
-        <p className="text-muted-foreground">
-          {findings.length} vulnerabilities detected in {scan.project_name}
-        </p>
+      <div className="mb-6 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div>
+          <h1 className="mb-2">Findings</h1>
+          <p className="text-muted-foreground">
+            {findings.length} vulnerabilities detected in {scan.project_name}
+          </p>
+        </div>
+        <ExportReportButton scanId={scan.job_id} />
       </div>
 
       <Card className="mb-6">

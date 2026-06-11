@@ -12,7 +12,7 @@ from typing import List
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from app.ml.ranker import load_ranker, scoring_function
@@ -26,9 +26,17 @@ from .db import (
     init_db,
     upsert_contributor_stat,
 )
-from .models import Finding, FixRequest, FixResponse, ScanResponse, VerifyResponse
+from .models import (
+    Finding,
+    FixRequest,
+    FixResponse,
+    Location,
+    ScanResponse,
+    VerifyResponse,
+)
 from .remediation.engine import propose_fixes
 from .reports.evidence_pack import build_evidence_pack
+from .reports.pdf_builder import generate_audit_pdf
 from .sandbox.verify import verify_repo
 from .scanners.entropy import run_entropy
 from .scanners.gitleaks import run_gitleaks
@@ -534,6 +542,75 @@ def evidence_pack(job_id: str = Form(...), project_name: str = Form("project")):
     )
     return FileResponse(
         path=str(pack_path), filename=pack_path.name, media_type="application/zip"
+    )
+
+
+@app.get("/api/scans/{job_id}/report/pdf", tags=["Reports"])
+async def download_audit_pdf(job_id: str):
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT project_name FROM jobs WHERE job_id = ?", (job_id,)
+        )
+        job_row = await cur.fetchone()
+
+        if job_row is None:
+            raise HTTPException(
+                status_code=404, detail=f"No job found with id '{job_id}'"
+            )
+
+        project_name = job_row[0]
+
+        cur = await db.execute(
+            """
+            SELECT id, rule_id, severity, category, file_path, line_number, message
+            FROM findings
+            WHERE job_id = ?
+            """,
+            (job_id,),
+        )
+        columns = [col[0] for col in cur.description]
+        rows = await cur.fetchall()
+    finally:
+        await db.close()
+
+    findings_list = []
+    for row in rows:
+        row_dict = dict(zip(columns, row))
+
+        loc = None
+        if row_dict["file_path"]:
+            loc = Location(
+                path=row_dict["file_path"], start_line=row_dict["line_number"]
+            )
+
+        findings_list.append(
+            Finding(
+                id=row_dict["id"],
+                title=row_dict["rule_id"] or "Unknown",
+                severity=row_dict["severity"] or "INFO",
+                category=row_dict["category"] or "Unknown",
+                location=loc,
+                description=row_dict["message"] or "",
+            )
+        )
+
+    scan_data = ScanResponse(
+        job_id=job_id,
+        project_name=project_name,
+        repo_path="Repository",
+        findings=findings_list,
+        scanners={},
+    )
+
+    pdf_bytes = generate_audit_pdf(scan_data)
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=PatchPilot-Audit-{job_id}.pdf"
+        },
     )
 
 

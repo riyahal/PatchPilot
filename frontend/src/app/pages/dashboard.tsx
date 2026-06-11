@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
-import { Upload, Link as LinkIcon, Clock, Trash2 } from "lucide-react";
+import { Upload, Link as LinkIcon, Clock, Trash2, Download, Loader2, CheckCircle, AlertTriangle } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
-import { scanRepoUrl, scanZip } from "../lib/api";
+import { scanRepoUrl, scanZip, downloadAuditReport } from "../lib/api";
 import { saveLastScan } from "../lib/scan-store";
 import { Button } from "../components/ui/button";
 import { TrendChart } from "../components/trend-chart";
@@ -58,6 +58,77 @@ function saveLocalRecentJob(job: UiJob) {
 
 function clearLocalRecentJobs() {
   localStorage.removeItem(RECENTS_KEY);
+}
+
+function ExportReportButton({ scanId }: { scanId: string }) {
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
+
+  const handleDownload = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    setIsGenerating(true);
+    setStatus("idle");
+
+    try {
+      const { blob, filename } = await downloadAuditReport(scanId);
+      
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+
+      setStatus("success");
+      setTimeout(() => setStatus("idle"), 4000);
+    } catch (error) {
+      setStatus("error");
+      setTimeout(() => setStatus("idle"), 5000);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  return (
+    <div className="relative inline-block text-left">
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={handleDownload}
+        disabled={isGenerating}
+        className="flex items-center gap-2 text-xs h-8"
+      >
+        {isGenerating ? (
+          <Loader2 className="w-3 h-3 animate-spin" />
+        ) : (
+          <Download className="w-3 h-3" />
+        )}
+        {isGenerating ? "Generating..." : "PDF"}
+      </Button>
+
+      {status === "success" && (
+        <div className="absolute bottom-full right-0 mb-2 z-50 flex items-center gap-2 p-2 bg-slate-900 border border-emerald-800 text-slate-200 shadow-xl rounded min-w-[200px] animate-in fade-in slide-in-from-bottom-2">
+          <CheckCircle className="w-4 h-4 text-emerald-500 shrink-0" />
+          <div className="flex flex-col">
+            <span className="text-xs font-semibold text-slate-200">Report Downloaded</span>
+          </div>
+        </div>
+      )}
+
+      {status === "error" && (
+        <div className="absolute bottom-full right-0 mb-2 z-50 flex items-center gap-2 p-2 bg-slate-900 border border-rose-800 text-slate-200 shadow-xl rounded min-w-[200px] animate-in fade-in slide-in-from-bottom-2">
+          <AlertTriangle className="w-4 h-4 text-rose-500 shrink-0" />
+          <div className="flex flex-col">
+            <span className="text-xs font-semibold text-slate-200">Export Failed</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function Dashboard() {
@@ -430,7 +501,10 @@ export function Dashboard() {
                             </span>
                           )}
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="text-right flex justify-end gap-2">
+                          {job.status === "completed" && (
+                            <ExportReportButton scanId={job.id} />
+                          )}
                           <Link
                             to={job.status === "completed" ? "/findings" : "/"}
                           >
@@ -467,11 +541,16 @@ export function Dashboard() {
                         </div>
                         <div className="flex items-center justify-between text-xs text-muted-foreground">
                           <span>{formatTimestamp(job.timestamp)}</span>
-                          {job.status === "completed" && (
-                            <span className="font-medium text-foreground">
-                              {job.findingsCount} findings
-                            </span>
-                          )}
+                          <div className="flex items-center gap-3">
+                            {job.status === "completed" && (
+                              <ExportReportButton scanId={job.id} />
+                            )}
+                            {job.status === "completed" && (
+                              <span className="font-medium text-foreground">
+                                {job.findingsCount} findings
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </CardContent>
                     </Card>

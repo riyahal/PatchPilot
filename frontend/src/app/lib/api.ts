@@ -208,3 +208,14 @@ export async function updateLeaderboard(data: LeaderboardUpdateRequest) {
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+export async function downloadAuditReport(jobId: string) {
+  const res = await fetch(`${API_BASE}/api/scans/${jobId}/report/pdf`);
+  
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  const blob = await res.blob();
+  return { blob, filename: `PatchPilot-Audit-${jobId}.pdf` };
+}
