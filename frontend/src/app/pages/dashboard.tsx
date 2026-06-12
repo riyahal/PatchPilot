@@ -1,7 +1,7 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { Upload, Link as LinkIcon, Clock, Trash2, Download, Loader2, CheckCircle, AlertTriangle, Building2, Layers } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
-import { scanRepoUrl, scanZip, downloadAuditReport, scanOrganization, getOrgJobStatus } from "../lib/api";
+import { scanRepoUrl, scanZip, downloadAuditReport, scanOrganization, getOrgJobStatus, abortOrganizationScan, API_BASE } from "../lib/api";
 import { saveLastScan } from "../lib/scan-store";
 import { Button } from "../components/ui/button";
 import { TrendChart } from "../components/trend-chart";
@@ -151,8 +151,17 @@ export function Dashboard() {
   const [orgUrl, setOrgUrl] = useState("");
   const [activeOrgJobId, setActiveOrgJobId] = useState<string | null>(null);
   const [orgStatusData, setOrgStatusData] = useState<any>(null);
-  const [pollingIntervalId, setPollingIntervalId] = useState<any>(null);
+  const [eventSource, setEventSource] = useState<EventSource | null>(null);
+  const [isAborting, setIsAborting] = useState(false);
   const [expectedRepoCount, setExpectedRepoCount] = useState<number>(0);
+
+  useEffect(() => {
+    return () => {
+      if (eventSource) {
+        eventSource.close();
+      }
+    };
+  }, [eventSource]);
 
   const formatTimestamp = (timestamp: string) => {
     const date = new Date(timestamp);
@@ -240,6 +249,10 @@ export function Dashboard() {
 
     setScanError(null);
     setScanLoading(true);
+    if (eventSource) {
+      eventSource.close();
+      setEventSource(null);
+    }
 
     try {
       const data = await scanOrganization(url);
@@ -249,25 +262,63 @@ export function Dashboard() {
 
       getOrgJobStatus(data.org_job_id).then(setOrgStatusData).catch(() => {});
 
-      const interval = setInterval(async () => {
-        try {
-          const statusRes = await getOrgJobStatus(data.org_job_id);
-          setOrgStatusData(statusRes);
+      const sse = new EventSource(`${API_BASE}/api/scans/org/${data.org_job_id}/stream`);
+      
+      sse.onmessage = (event) => {
+        const parsed = JSON.parse(event.data);
+        if (parsed.error) {
+          sse.close();
+          setScanLoading(false);
+          return;
+        }
+        
+        setOrgStatusData(parsed);
+        const isFullyFinished = 
+          ["completed", "failed"].includes(parsed.status) || 
+          (parsed.status === "aborted" && !parsed.repos.some((r: any) => r.status === "scanning" || r.status === "pending"));
 
-          if (statusRes.status === "completed") {
-            clearInterval(interval);
-            setScanLoading(false);
-          }
-        } catch (err) {
-          clearInterval(interval);
+        if (isFullyFinished) {
+          sse.close();
           setScanLoading(false);
         }
-      }, 3000);
+      };
 
-      setPollingIntervalId(interval);
+      sse.onerror = () => {
+        if (sse.readyState === EventSource.CLOSED) {
+          setScanLoading(false);
+        }
+      };
+
+      setEventSource(sse);
     } catch (e: any) {
       setScanError(e?.message ?? "Organization batch scan failed");
       setScanLoading(false);
+    }
+  };
+
+const handleAbortScan = async (mode: "pending" | "force") => {
+    if (!activeOrgJobId) return;
+    if (mode === "force") {
+      if (eventSource) {
+        eventSource.close();
+        setEventSource(null);
+      }
+      setActiveOrgJobId(null);
+      setOrgStatusData(null);
+      setOrgUrl("");
+      setScanLoading(false);
+    } else {
+      setIsAborting(true);
+    }
+    
+    try {
+      await abortOrganizationScan(activeOrgJobId, mode);
+    } catch (err) {
+      console.error("Failed to abort scan", err);
+    } finally {
+      if (mode !== "force") {
+        setIsAborting(false);
+      }
     }
   };
 
@@ -507,6 +558,8 @@ export function Dashboard() {
                       "text-xs uppercase px-3 py-1 rounded font-mono font-bold border",
                       orgStatusData.status === "completed" 
                         ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" 
+                        : orgStatusData.status === "aborted"
+                        ? "bg-rose-500/10 text-rose-500 border-rose-500/20"
                         : "bg-primary/10 text-primary border-primary/20"
                     )}>
                       {orgStatusData.status}
@@ -530,7 +583,11 @@ export function Dashboard() {
                           <div className="flex items-center gap-3">
                             {repo.status === "scanning" && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
                             {repo.status === "completed" && <CheckCircle className="w-4 h-4 text-emerald-500" />}
-                            <span className="text-xs font-mono text-muted-foreground capitalize bg-background px-2.5 py-1 rounded border shadow-sm w-24 text-center">
+                            {repo.status === "aborted" && <AlertTriangle className="w-4 h-4 text-rose-500" />}
+                            <span className={cn(
+                              "text-xs font-mono capitalize bg-background px-2.5 py-1 rounded border shadow-sm w-24 text-center",
+                              repo.status === "aborted" ? "text-rose-500 border-rose-500/20" : "text-muted-foreground"
+                            )}>
                               {repo.status}
                             </span>
                           </div>
@@ -541,12 +598,37 @@ export function Dashboard() {
                 </div>
 
                 {/* Modal Footer */}
-                {orgStatusData.status === "completed" && (
-                  <div className="p-6 border-t bg-muted/10 rounded-b-lg flex justify-end">
+                <div className="p-6 border-t bg-muted/10 rounded-b-lg flex justify-end gap-3">
+                  {(orgStatusData.status === "scanning" || orgStatusData.status === "pending") && (
+                    <>
+                      <Button 
+                        variant="outline" 
+                        onClick={() => handleAbortScan("pending")}
+                        disabled={isAborting}
+                        className="transition-all cursor-pointer hover:bg-muted hover:shadow-sm"
+                      >
+                        {isAborting && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+                        Cancel Pending Scans
+                      </Button>
+                      
+                      <Button 
+                        variant="destructive" 
+                        onClick={() => handleAbortScan("force")}
+                        disabled={isAborting}
+                        className="transition-all cursor-pointer hover:bg-red-600 hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 active:scale-95"
+                      >
+                        {isAborting && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+                        Force Cancel Scan
+                      </Button>
+                    </>
+                  )}
+
+                  {["completed", "failed", "aborted"].includes(orgStatusData.status) && (
                     <Button 
                       size="lg"
+                      className="cursor-pointer"
                       onClick={() => {
-                        if (pollingIntervalId) clearInterval(pollingIntervalId);
+                        if (eventSource) eventSource.close();
                         setActiveOrgJobId(null);
                         setOrgStatusData(null);
                         setOrgUrl("");
@@ -555,8 +637,8 @@ export function Dashboard() {
                     >
                       View Collected Analytics
                     </Button>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             </div>
           )}

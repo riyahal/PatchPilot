@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -18,11 +19,12 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Request,
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from app.ml.ranker import load_ranker, scoring_function
@@ -787,6 +789,19 @@ async def _run_repo_scan_task(
         try:
             db = await get_db()
             try:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(
+                    "SELECT status FROM org_jobs WHERE id = ?", (org_job_id,)
+                )
+                org_row = await cur.fetchone()
+
+                if org_row and org_row["status"] == "aborted":
+                    await db.execute(
+                        "UPDATE jobs SET status = 'aborted' WHERE job_id = ?", (job_id,)
+                    )
+                    await db.commit()
+                    return
+
                 await db.execute(
                     "UPDATE jobs SET status = 'scanning' WHERE job_id = ?", (job_id,)
                 )
@@ -899,14 +914,20 @@ async def _run_org_batch(org_job_id: str, repos: List[dict]):
             _run_repo_scan_task(sem, job_id, repo_url, ref, project_name, org_job_id)
         )
 
-    await asyncio.gather(*tasks)
+    await asyncio.gather(*tasks, return_exceptions=True)
 
     db = await get_db()
     try:
-        await db.execute(
-            "UPDATE org_jobs SET status = 'completed' WHERE id = ?", (org_job_id,)
+        cur = await db.execute(
+            "SELECT status FROM org_jobs WHERE id = ?", (org_job_id,)
         )
-        await db.commit()
+        row = await cur.fetchone()
+
+        if row and row[0] != "aborted":
+            await db.execute(
+                "UPDATE org_jobs SET status = 'completed' WHERE id = ?", (org_job_id,)
+            )
+            await db.commit()
     finally:
         await db.close()
 
@@ -973,3 +994,89 @@ async def get_org_status(org_job_id: str):
     return OrgJobStatusResponse(
         org_job_id=org_job_id, status=org_row["status"], repos=repos
     )
+
+
+@app.post("/api/scans/org/{org_job_id}/abort")
+async def abort_org_scan(org_job_id: str, mode: str = Query("pending")):
+    for attempt in range(5):
+        try:
+            db = await get_db()
+            try:
+                await db.execute(
+                    "UPDATE org_jobs SET status = 'aborted' WHERE id = ? AND status != 'completed'",
+                    (org_job_id,),
+                )
+                if mode == "force":
+                    await db.execute(
+                        "UPDATE jobs SET status = 'aborted' WHERE org_job_id = ? AND status IN ('pending', 'scanning')",
+                        (org_job_id,),
+                    )
+                else:
+                    await db.execute(
+                        "UPDATE jobs SET status = 'aborted' WHERE org_job_id = ? AND status = 'pending'",
+                        (org_job_id,),
+                    )
+
+                await db.commit()
+                return {"status": "aborted", "org_job_id": org_job_id, "mode": mode}
+            finally:
+                await db.close()
+        except Exception as e:
+            if "locked" in str(e).lower() and attempt < 4:
+                import asyncio
+
+                await asyncio.sleep(1)
+                continue
+            raise HTTPException(status_code=500, detail=f"Database lock timeout: {e}")
+
+
+@app.get("/api/scans/org/{org_job_id}/stream")
+async def stream_org_status(org_job_id: str):
+    async def event_generator():
+        while True:
+            db = await get_db()
+            try:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(
+                    "SELECT status FROM org_jobs WHERE id = ?", (org_job_id,)
+                )
+                org_row = await cur.fetchone()
+
+                if not org_row:
+                    yield f"data: {json.dumps({'error': 'Org job not found'})}\n\n"
+                    break
+
+                cur = await db.execute(
+                    "SELECT job_id, project_name, status FROM jobs WHERE org_job_id = ?",
+                    (org_job_id,),
+                )
+                job_rows = await cur.fetchall()
+            finally:
+                await db.close()
+
+            repos = [
+                {
+                    "job_id": r["job_id"],
+                    "project_name": r["project_name"],
+                    "status": r["status"],
+                }
+                for r in job_rows
+            ]
+            payload = {
+                "org_job_id": org_job_id,
+                "status": org_row["status"],
+                "repos": repos,
+            }
+
+            yield f"data: {json.dumps(payload)}\n\n"
+            if org_row["status"] in ["completed", "failed"]:
+                break
+
+            if org_row["status"] == "aborted":
+                is_scanning = any(r["status"] == "scanning" for r in job_rows)
+                if not is_scanning:
+                    break
+
+            await asyncio.sleep(1.5)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")

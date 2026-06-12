@@ -99,3 +99,38 @@ def test_get_org_status_not_found(mock_get_db, client):
 
     response = client.get("/api/scans/org/999/status")
     assert response.status_code == 404
+
+
+@patch("app.main.get_db", new_callable=AsyncMock)
+def test_abort_org_scan(mock_get_db, client):
+    mock_db = AsyncMock()
+    mock_get_db.return_value = mock_db
+
+    response = client.post("/api/scans/org/123/abort")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "aborted",
+        "org_job_id": "123",
+        "mode": "pending",
+    }
+
+
+@patch("app.main.get_db", new_callable=AsyncMock)
+def test_stream_org_status(mock_get_db, client):
+    mock_cursor = AsyncMock()
+    mock_cursor.fetchone.return_value = {"status": "completed"}
+    mock_cursor.fetchall.return_value = [
+        {"job_id": "1", "project_name": "r1", "status": "completed"}
+    ]
+
+    mock_db = AsyncMock()
+    mock_db.execute.return_value = mock_cursor
+    mock_get_db.return_value = mock_db
+
+    response = client.get("/api/scans/org/123/stream")
+
+    assert response.status_code == 200
+    assert "data:" in response.text
+    assert "completed" in response.text
+    assert "r1" in response.text

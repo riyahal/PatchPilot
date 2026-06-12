@@ -1,4 +1,4 @@
-const API_BASE =
+export const API_BASE =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ||
   "http://localhost:8000";
 
@@ -237,12 +237,12 @@ export async function downloadAuditReport(jobId: string) {
 export type RepoStatus = {
   job_id: string;
   project_name: string;
-  status: "pending" | "scanning" | "completed" | "failed";
+  status: "pending" | "scanning" | "completed" | "failed" | "aborted";
 };
 
 export type OrgJobStatusResponse = {
   org_job_id: string;
-  status: "pending" | "scanning" | "completed";
+  status: "pending" | "scanning" | "completed" | "failed" | "aborted";
   repos: RepoStatus[];
 };
 
@@ -269,3 +269,11 @@ export async function getOrgJobStatus(orgJobId: string) {
 
   return (await res.json()) as OrgJobStatusResponse;
 }
+
+export const abortOrganizationScan = async (orgJobId: string, mode: "pending" | "force" = "pending") => {
+  const response = await fetch(`${API_BASE}/api/scans/org/${orgJobId}/abort?mode=${mode}`, {
+    method: "POST",
+  });
+  if (!response.ok) throw new Error("Failed to abort scan");
+  return response.json();
+};
