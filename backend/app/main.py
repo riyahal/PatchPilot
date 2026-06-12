@@ -9,6 +9,7 @@ import re
 import shutil
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 
@@ -52,7 +53,7 @@ from .models import (
 )
 from .remediation.engine import propose_fixes
 from .reports.evidence_pack import build_evidence_pack
-from .reports.pdf_builder import generate_audit_pdf
+from .reports.pdf_builder import generate_audit_pdf, generate_org_audit_pdf
 from .sandbox.verify import verify_repo
 from .scanners.entropy import run_entropy
 from .scanners.gitleaks import run_gitleaks
@@ -1199,3 +1200,111 @@ async def get_org_findings(org_job_id: str):
         return [dict(r) for r in rows]
     finally:
         await db.close()
+
+
+@app.get("/api/scans/org/{org_job_id}/report/pdf", tags=["Reports"])
+async def download_org_audit_pdf(org_job_id: str):
+    db = await get_db()
+    try:
+        db.row_factory = aiosqlite.Row
+
+        cur = await db.execute(
+            "SELECT org_name FROM org_jobs WHERE id = ?", (org_job_id,)
+        )
+        org_row = await cur.fetchone()
+        if not org_row:
+            raise HTTPException(status_code=404, detail="Organization job not found")
+        org_name = org_row["org_name"]
+        cur = await db.execute(
+            """
+            SELECT 
+                COUNT(*) as total,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
+            FROM jobs 
+            WHERE org_job_id = ?
+            """,
+            (org_job_id,),
+        )
+        repo_stats = await cur.fetchone()
+
+        cur = await db.execute(
+            """
+            SELECT f.severity, COUNT(f.id) as count
+            FROM findings f
+            JOIN jobs j ON f.job_id = j.job_id
+            WHERE j.org_job_id = ?
+            GROUP BY f.severity
+            """,
+            (org_job_id,),
+        )
+        severity_rows = await cur.fetchall()
+        severities = {r["severity"].lower(): r["count"] for r in severity_rows}
+
+        cur = await db.execute(
+            """
+            SELECT j.project_name as repo_name, COUNT(f.id) as count
+            FROM findings f
+            JOIN jobs j ON f.job_id = j.job_id
+            WHERE j.org_job_id = ?
+            GROUP BY j.project_name
+            ORDER BY count DESC
+            LIMIT 5
+            """,
+            (org_job_id,),
+        )
+        top_vulnerable = [
+            {"repo_name": r["repo_name"], "count": r["count"]}
+            for r in await cur.fetchall()
+        ]
+
+        summary = {
+            "total_repositories": repo_stats["total"] or 0,
+            "completed_repositories": repo_stats["completed"] or 0,
+            "failed_repositories": repo_stats["failed"] or 0,
+            "severity_distribution": severities,
+            "top_vulnerable_repositories": top_vulnerable,
+        }
+        cur = await db.execute(
+            """
+            SELECT 
+                f.id, 
+                j.project_name as repo_name, 
+                f.rule_id as title, 
+                f.message as description, 
+                f.severity, 
+                f.file_path, 
+                f.line_number, 
+                f.cwe
+            FROM findings f
+            JOIN jobs j ON f.job_id = j.job_id
+            WHERE j.org_job_id = ?
+            ORDER BY 
+                CASE f.severity 
+                    WHEN 'CRITICAL' THEN 1 
+                    WHEN 'HIGH' THEN 2 
+                    WHEN 'MEDIUM' THEN 3 
+                    WHEN 'LOW' THEN 4 
+                    ELSE 5 
+                END
+            """,
+            (org_job_id,),
+        )
+        findings = [dict(r) for r in await cur.fetchall()]
+
+    finally:
+        await db.close()
+
+    pdf_bytes = generate_org_audit_pdf(org_job_id, org_name, summary, findings)
+
+    safe_org_name = "".join(
+        c for c in org_name if c.isalnum() or c in ("-", "_")
+    ).rstrip()
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    filename = f"PatchPilot-Org-Audit-{safe_org_name}-{date_str}.pdf"
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

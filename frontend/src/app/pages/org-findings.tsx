@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Building2, ShieldAlert, CheckCircle, XCircle, Filter } from "lucide-react";
-import { getOrgSummary, getOrgFindings } from "../lib/api";
+import { ArrowLeft, Building2, ShieldAlert, CheckCircle, XCircle, Filter, Download, Loader2, ChevronLeft, ChevronRight } from "lucide-react";
+import { getOrgSummary, getOrgFindings, downloadOrgAuditReport } from "../lib/api";
+import { saveBlob } from "../lib/download";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
@@ -23,7 +24,15 @@ export function OrgFindings() {
   const [summary, setSummary] = useState<any>(null);
   const [findings, setFindings] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
   const [repoFilter, setRepoFilter] = useState<string>("ALL");
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 50;
+
+  // Reset to page 1 whenever the filter changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [repoFilter]);
 
   useEffect(() => {
     if (!orgJobId) return;
@@ -46,6 +55,20 @@ export function OrgFindings() {
     fetchData();
   }, [orgJobId]);
 
+  const handleExportPDF = async () => {
+    if (!orgJobId) return;
+    try {
+      setExporting(true);
+      const { blob, filename } = await downloadOrgAuditReport(orgJobId);
+      saveBlob(blob, filename);
+    } catch (err) {
+      console.error("Failed to export PDF", err);
+      alert("Failed to generate PDF. Please try again.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex h-[50vh] items-center justify-center">
@@ -66,24 +89,51 @@ export function OrgFindings() {
   const filteredFindings = repoFilter === "ALL" 
     ? findings 
     : findings.filter(f => f.repo_name === repoFilter);
+  const totalPages = Math.ceil(filteredFindings.length / itemsPerPage);
+  const paginatedFindings = filteredFindings.slice(
+    (currentPage - 1) * itemsPerPage,
+    currentPage * itemsPerPage
+  );
 
   return (
     <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 max-w-7xl pb-20 md:pb-8 animate-in fade-in duration-500">
       {/* Header */}
-      <div className="flex items-center gap-4 mb-8">
-        <Button variant="ghost" size="icon" onClick={() => navigate("/")} className="cursor-pointer">
-          <ArrowLeft className="h-5 w-5" />
-        </Button>
-        <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
-            <Building2 className="h-6 w-6 text-primary" />
-            Organization Security Posture
-          </h1>
-          <p className="text-muted-foreground text-sm">
-            Aggregate vulnerability data across {summary.total_repositories} repositories.
-          </p>
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8">
+        <div className="flex items-center gap-4">
+          <Button variant="ghost" size="icon" onClick={() => navigate("/")} className="cursor-pointer">
+            <ArrowLeft className="h-5 w-5" />
+          </Button>
+          <div>
+            <h1 className="text-2xl font-bold flex items-center gap-2">
+              <Building2 className="h-6 w-6 text-primary" />
+              Organization Security Posture
+            </h1>
+            <p className="text-muted-foreground text-sm">
+              Aggregate vulnerability data across {summary.total_repositories} repositories.
+            </p>
+          </div>
         </div>
+        
+        <Button 
+          onClick={handleExportPDF} 
+          disabled={exporting}
+          className="shadow-sm transition-all cursor-pointer"
+        >
+          {exporting ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Generating PDF...
+            </>
+          ) : (
+            <>
+              <Download className="mr-2 h-4 w-4" />
+              Export Report
+            </>
+          )}
+        </Button>
       </div>
+
+      {/* KPI Scorecards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
         <Card className="bg-muted/30 border-border/50">
           <CardContent className="p-6 flex items-center gap-4">
@@ -145,6 +195,8 @@ export function OrgFindings() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Severity Distribution */}
         <Card className="shadow-sm">
           <CardHeader>
             <CardTitle className="text-lg">Severity Breakdown</CardTitle>
@@ -202,7 +254,7 @@ export function OrgFindings() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredFindings.length === 0 ? (
+                {paginatedFindings.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={5} className="text-center py-12 text-muted-foreground bg-muted/5">
                       <div className="flex flex-col items-center gap-2">
@@ -212,14 +264,14 @@ export function OrgFindings() {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredFindings.map((finding) => (
+                  paginatedFindings.map((finding) => (
                     <TableRow key={finding.id} className="hover:bg-muted/50 transition-colors cursor-default">
                       <TableCell className="font-medium text-primary">{finding.repo_name}</TableCell>
-                        <TableCell>
+                      <TableCell>
                         <span className={`text-[10px] font-bold px-2 py-1 rounded border uppercase tracking-wider ${getSeverityColor(finding.severity)}`}>
                           {finding.severity || "INFO"}
                         </span>
-                        </TableCell>
+                      </TableCell>
                       <TableCell className="max-w-[300px] truncate font-medium" title={finding.title}>
                         {finding.title}
                       </TableCell>
@@ -235,6 +287,34 @@ export function OrgFindings() {
               </TableBody>
             </Table>
           </div>
+          
+          {/* Pagination Controls */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between px-4 py-3 border-t bg-muted/10">
+              <span className="text-sm text-muted-foreground">
+                Showing {((currentPage - 1) * itemsPerPage) + 1} to {Math.min(currentPage * itemsPerPage, filteredFindings.length)} of {filteredFindings.length} findings
+              </span>
+              <div className="flex items-center gap-2">
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                >
+                  <ChevronLeft className="h-4 w-4 mr-1" /> Prev
+                </Button>
+                <span className="text-sm font-medium px-2">Page {currentPage} of {totalPages}</span>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                >
+                  Next <ChevronRight className="h-4 w-4 ml-1" />
+                </Button>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

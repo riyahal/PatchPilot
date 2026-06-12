@@ -187,3 +187,54 @@ def test_get_org_findings(mock_get_db, client):
     assert len(data) == 1
     assert data[0]["repo_name"] == "backend-api"
     assert data[0]["severity"] == "CRITICAL"
+
+
+@patch("app.main.generate_org_audit_pdf")
+@patch("app.main.get_db", new_callable=AsyncMock)
+def test_download_org_audit_pdf(mock_get_db, mock_generate_pdf, client):
+    mock_db = AsyncMock()
+    mock_get_db.return_value = mock_db
+
+    mock_cursor_1 = AsyncMock()
+    mock_cursor_1.fetchone.return_value = {"org_name": "AcmeCorp"}
+    mock_cursor_2 = AsyncMock()
+    mock_cursor_2.fetchone.return_value = {"total": 10, "completed": 8, "failed": 2}
+    mock_cursor_3 = AsyncMock()
+    mock_cursor_3.fetchall.return_value = [{"severity": "CRITICAL", "count": 5}]
+    mock_cursor_4 = AsyncMock()
+    mock_cursor_4.fetchall.return_value = [{"repo_name": "api-gateway", "count": 12}]
+    mock_cursor_5 = AsyncMock()
+    mock_cursor_5.fetchall.return_value = [
+        {
+            "id": "vuln-1",
+            "repo_name": "api-gateway",
+            "title": "Hardcoded Credentials",
+            "description": "Found DB password",
+            "severity": "CRITICAL",
+            "file_path": "config.yml",
+            "line_number": 15,
+            "cwe": "CWE-798",
+        }
+    ]
+
+    mock_db.execute.side_effect = [
+        mock_cursor_1,
+        mock_cursor_2,
+        mock_cursor_3,
+        mock_cursor_4,
+        mock_cursor_5,
+    ]
+
+    mock_generate_pdf.return_value = b"%PDF-1.4 Mock PDF Content"
+    response = client.get("/api/scans/org/123/report/pdf")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert "attachment; filename=" in response.headers["content-disposition"]
+    assert "AcmeCorp" in response.headers["content-disposition"]
+    assert response.content == b"%PDF-1.4 Mock PDF Content"
+
+    mock_generate_pdf.assert_called_once()
+    called_args = mock_generate_pdf.call_args[0]
+    assert called_args[0] == "123"
+    assert called_args[1] == "AcmeCorp"

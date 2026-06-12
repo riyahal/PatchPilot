@@ -289,3 +289,19 @@ export async function getOrgFindings(orgJobId: string) {
   if (!res.ok) throw new Error("Failed to fetch organization findings");
   return res.json();
 }
+
+export async function downloadOrgAuditReport(orgJobId: string) {
+  const res = await fetch(`${API_BASE}/api/scans/org/${orgJobId}/report/pdf`);
+  
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  const blob = await res.blob();
+  
+  const cd = res.headers.get("content-disposition") || "";
+  const match = cd.match(/filename="?([^"]+)"?/i);
+  const filename = match?.[1] || `PatchPilot-Org-Audit-${orgJobId}.pdf`;
+
+  return { blob, filename };
+}
