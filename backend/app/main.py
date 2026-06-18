@@ -28,7 +28,7 @@ from fastapi import (
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.ml.ranker import load_ranker, scoring_function
 
@@ -831,7 +831,12 @@ async def dependency_diff_endpoint():
 
 
 class LeaderboardUpdateRequest(BaseModel):
-    github_username: str
+    github_username: str = Field(
+        ...,
+        max_length=39,
+        pattern=r"^[a-zA-Z0-9](?:-?[a-zA-Z0-9])*$",
+        description="GitHub username must be max 39 chars, alphanumeric or single hyphens.",
+    )
     pr_description: str = ""
     fixes_passed: int = 0
     is_pr_merged: bool = False
