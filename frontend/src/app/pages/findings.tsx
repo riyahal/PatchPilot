@@ -41,6 +41,7 @@ import { CodeBlock } from "../components/code-block";
 import { FilterChips } from "../components/filter-chips";
 import type { Finding } from "../data/sample-data";
 import { loadLastScan } from "../lib/scan-store";
+import { getJobFindings } from "../lib/api";
 import { mapBackendFindingToUi } from "../lib/mappers";
 import { cn } from "../components/ui/utils";
 
@@ -114,16 +115,28 @@ function ExportReportButton({ scanId }: { scanId: string }) {
 export function Findings() {
   const navigate = useNavigate();
 
-  const scan = useMemo(() => loadLastScan(), []);
-  const findings: Finding[] = useMemo(
-    () => (scan ? scan.findings.map(mapBackendFindingToUi) : []),
-    [scan],
-  );
+  const [scan, setScan] = useState<any>(null);
+  const [findings, setFindings] = useState<Finding[]>([]);
+  const [isLoadingFindings, setIsLoadingFindings] = useState(true);
 
   useEffect(() => {
-    if (!scan) {
+    const storedScan = loadLastScan();
+    if (!storedScan?.job_id) {
+      setIsLoadingFindings(false);
+      return;
     }
-  }, [scan, navigate]);
+    setScan(storedScan);
+    getJobFindings(storedScan.job_id)
+      .then((response: any) => {
+        const actualFindings = Array.isArray(response) 
+          ? response 
+          : (response.findings || response.data || []);
+          
+        setFindings(actualFindings.map(mapBackendFindingToUi));
+      })
+      .catch((err) => console.error("Failed to fetch findings", err))
+      .finally(() => setIsLoadingFindings(false));
+  }, []);
 
   const [selectedFindings, setSelectedFindings] = useState<Set<string>>(new Set());
   const [detailFinding, setDetailFinding] = useState<Finding | null>(null);
@@ -204,6 +217,17 @@ export function Findings() {
       return matchesQuery && matchesSeverity;
     });
   }, [findings, searchQuery, activeSeverities]);
+
+  if (isLoadingFindings) {
+    return (
+      <div className="container mx-auto px-4 py-8 max-w-7xl flex justify-center items-center h-64">
+        <div className="flex flex-col items-center gap-4 text-muted-foreground">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          <p>Loading scan results...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!scan) {
     return (

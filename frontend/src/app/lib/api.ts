@@ -98,6 +98,11 @@ export async function scanRepoUrl(
 
   return (await res.json()) as ScanInitResponse;
 }
+export async function getJobFindings(jobId: string): Promise<BackendFinding[]> {
+  const res = await fetch(`${API_BASE}/jobs/${jobId}/findings`);
+  if (!res.ok) throw new Error(await res.text());
+  return (await res.json()) as BackendFinding[];
+}
 
 export async function fix(jobId: string, findingIds: string[]) {
   const res = await fetch(`${API_BASE}/fix`, {
