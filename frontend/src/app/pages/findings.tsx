@@ -423,103 +423,109 @@ export function Findings() {
         ))}
       </div>
 
-      <Sheet open={!!detailFinding} onOpenChange={() => setDetailFinding(null)}>
-        <SheetContent className="w-full sm:max-w-2xl overflow-y-auto">
+    <Sheet open={!!detailFinding} onOpenChange={() => setDetailFinding(null)}>
+        <SheetContent className="w-full sm:max-w-2xl overflow-y-auto flex flex-col p-6 sm:p-8">
           {detailFinding && (
             <>
-              <SheetHeader>
-                <SheetTitle>{detailFinding.title}</SheetTitle>
+              <SheetHeader className="pb-4 border-b border-border/50">
+                <SheetTitle className="text-xl font-semibold tracking-tight">{detailFinding.title}</SheetTitle>
+                {/* 🚨 CRITICAL ACCESSIBILITY FIX: Added SheetDescription to prevent Radix layout crash */}
+                <div id="dialog-description" className="text-sm text-muted-foreground mt-1">
+                  Finding ID: <span className="font-mono">{detailFinding.id}</span>
+                </div>
               </SheetHeader>
 
-              <div className="mt-6 space-y-6">
-                <div className="flex flex-wrap gap-2">
+              <div className="flex-1 overflow-y-auto mt-6 space-y-8" aria-describedby="dialog-description">
+                <div className="flex flex-wrap items-center gap-3">
                   <SeverityChip severity={detailFinding.severity} />
                   <ToolBadge tool={detailFinding.tool} />
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-border text-xs font-medium">
-                    {detailFinding.confidence}% confidence
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-muted/30 text-muted-foreground text-[11px] font-bold uppercase tracking-wider">
+                    {detailFinding.confidence}% Confidence
                   </span>
                 </div>
 
-                <Tabs defaultValue="details" className="w-full">
-                  <TabsList className="w-full">
-                    <TabsTrigger value="details" className="flex-1">
-                      Details
-                    </TabsTrigger>
-                    <TabsTrigger value="fix" className="flex-1">
-                      Suggested Fix
-                    </TabsTrigger>
-                    <TabsTrigger value="references" className="flex-1">
-                      References
-                    </TabsTrigger>
+                <Tabs defaultValue="details" className="w-full flex flex-col gap-6">
+                  <TabsList className="w-full grid grid-cols-3 bg-muted/20 p-1 rounded-lg">
+                    <TabsTrigger value="details" className="rounded-md data-[state=active]:bg-background data-[state=active]:shadow-sm">Details</TabsTrigger>
+                    <TabsTrigger value="fix" className="rounded-md data-[state=active]:bg-background data-[state=active]:shadow-sm">Suggested Fix</TabsTrigger>
+                    <TabsTrigger value="references" className="rounded-md data-[state=active]:bg-background data-[state=active]:shadow-sm">References</TabsTrigger>
                   </TabsList>
 
-                  <TabsContent value="details" className="space-y-4">
-                    <div>
-                      <h4 className="mb-2">Description</h4>
-                      <p className="text-sm text-muted-foreground">
-                        {detailFinding.description}
-                      </p>
+                  <TabsContent value="details" className="flex flex-col gap-8 animate-in fade-in duration-300 mt-0 outline-none">
+                    <div className="flex flex-col gap-3">
+                      <h4 className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Description</h4>
+                      <div className="bg-muted/5 rounded-lg p-5 border border-border/40 shadow-sm">
+                        <p className="text-sm leading-relaxed text-foreground/90">
+                          {detailFinding.description}
+                        </p>
+                      </div>
                     </div>
 
-                    <div>
-                      <h4 className="mb-2">Location</h4>
-                      <div className="text-sm">
-                        <div className="font-mono text-xs mb-1">
+                    <div className="flex flex-col gap-3">
+                      <h4 className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Location</h4>
+                      <div className="bg-muted/5 rounded-lg p-5 border border-border/40 flex flex-col gap-2 shadow-sm">
+                        <div className="font-mono text-sm text-primary break-all">
                           {detailFinding.file}
                         </div>
-                        <div className="text-muted-foreground">
+                        <div className="text-sm text-muted-foreground font-medium">
                           Line {detailFinding.lineNumber}
                         </div>
                       </div>
                     </div>
 
-                    <div>
-                      <h4 className="mb-3">Code Evidence</h4>
-                      <CodeBlock
-                        code={detailFinding.code}
-                        language="typescript"
-                        startLine={detailFinding.lineNumber}
-                        highlightLines={[detailFinding.lineNumber + 1]}
-                      />
+                    <div className="flex flex-col gap-3">
+                      <h4 className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Code Evidence</h4>
+                      <div className="rounded-lg overflow-hidden border border-border/40 shadow-sm bg-muted/5">
+                        <CodeBlock
+                          code={detailFinding.code}
+                          language="typescript"
+                          startLine={detailFinding.lineNumber}
+                          highlightLines={[detailFinding.lineNumber + 1]}
+                        />
+                      </div>
                     </div>
                   </TabsContent>
 
-                  <TabsContent value="fix" className="space-y-4">
+                  <TabsContent value="fix" className="flex flex-col gap-6 animate-in fade-in duration-300 mt-0 outline-none">
                     {detailFinding.suggestedFix ? (
                       <>
-                        <p className="text-sm text-muted-foreground">
-                          Recommended code change to address this vulnerability:
-                        </p>
-                        <CodeBlock
-                          code={detailFinding.suggestedFix}
-                          language="typescript"
-                          startLine={detailFinding.lineNumber}
-                        />
-                        <div className="flex gap-2">
-                          <Link to="/fix">
-                            <Button>Apply Fix</Button>
+                        <div className="flex flex-col gap-3">
+                          <h4 className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Recommended Patch</h4>
+                          <div className="rounded-lg overflow-hidden border border-border/40 shadow-sm bg-muted/5">
+                            <CodeBlock
+                              code={detailFinding.suggestedFix}
+                              language="typescript"
+                              startLine={detailFinding.lineNumber}
+                            />
+                          </div>
+                        </div>
+                        <div className="flex gap-3 mt-2">
+                          <Link to="/fix" className="flex-1">
+                            <Button className="w-full shadow-sm">Apply Fix</Button>
                           </Link>
-                          <Button variant="outline" disabled>
+                          <Button variant="outline" disabled className="flex-1 bg-muted/5">
                             Copy Patch
                           </Button>
                         </div>
                       </>
                     ) : (
-                      <p className="text-sm text-muted-foreground">
-                        No automated fix available for this finding.
-                      </p>
+                      <div className="flex flex-col items-center justify-center py-16 text-center border rounded-lg border-dashed border-border/60 bg-muted/5">
+                        <p className="text-sm text-muted-foreground font-medium">No automated fix available for this finding.</p>
+                      </div>
                     )}
                   </TabsContent>
 
-                  <TabsContent value="references" className="space-y-4">
-                    {detailFinding.references &&
-                    detailFinding.references.length > 0 ? (
-                      <ul className="space-y-2">
+                  <TabsContent value="references" className="flex flex-col gap-4 animate-in fade-in duration-300 mt-0 outline-none">
+                    {detailFinding.references && detailFinding.references.length > 0 ? (
+                      <ul className="flex flex-col gap-3">
                         {detailFinding.references.map((ref, index) => (
-                          <li key={index} className="text-sm">
+                          <li key={index} className="group flex items-start gap-3 p-4 rounded-lg border border-border/40 bg-muted/5 hover:bg-muted/10 transition-colors shadow-sm">
+                            <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-primary/50 shrink-0 group-hover:bg-primary transition-colors" />
                             <a
-                              href="#"
-                              className="text-primary hover:underline"
+                              href={ref}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sm text-primary hover:text-primary/80 font-medium break-all flex-1 leading-relaxed"
                             >
                               {ref}
                             </a>
@@ -527,23 +533,24 @@ export function Findings() {
                         ))}
                       </ul>
                     ) : (
-                      <p className="text-sm text-muted-foreground">
-                        No references available.
-                      </p>
+                      <div className="flex flex-col items-center justify-center py-16 text-center border rounded-lg border-dashed border-border/60 bg-muted/5">
+                        <p className="text-sm text-muted-foreground font-medium">No external references provided.</p>
+                      </div>
                     )}
                   </TabsContent>
                 </Tabs>
+              </div>
 
-                <div className="flex gap-2 pt-4 border-t border-border">
-                  <Button variant="outline" className="flex-1" disabled>
-                    <CheckCircle2 className="h-4 w-4 mr-2" />
-                    Accept
-                  </Button>
-                  <Button variant="outline" className="flex-1" disabled>
-                    <XCircle className="h-4 w-4 mr-2" />
-                    Ignore
-                  </Button>
-                </div>
+              {/* Status Buttons - Pushed cleanly to the bottom */}
+              <div className="flex gap-3 pt-6 mt-6 border-t border-border/50 shrink-0">
+                <Button variant="outline" className="flex-1 bg-muted/5 border-border/60 text-muted-foreground" disabled>
+                  <CheckCircle2 className="h-4 w-4 mr-2 opacity-50" />
+                  Accept Risk
+                </Button>
+                <Button variant="outline" className="flex-1 bg-muted/5 border-border/60 text-muted-foreground" disabled>
+                  <XCircle className="h-4 w-4 mr-2 opacity-50" />
+                  Ignore Finding
+                </Button>
               </div>
             </>
           )}
