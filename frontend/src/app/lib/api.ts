@@ -104,6 +104,17 @@ export async function getJobFindings(jobId: string): Promise<BackendFinding[]> {
   return (await res.json()) as BackendFinding[];
 }
 
+export async function updateFindingStatus(findingId: string, status: "open" | "accepted" | "ignored") {
+  const res = await fetch(`${API_BASE}/findings/${findingId}/status`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function fix(jobId: string, findingIds: string[]) {
   const res = await fetch(`${API_BASE}/fix`, {
     method: "POST",

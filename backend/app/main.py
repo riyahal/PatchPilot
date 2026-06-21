@@ -44,6 +44,7 @@ from .db import (
 )
 from .models import (
     Finding,
+    FindingStatusUpdate,
     FixRequest,
     FixResponse,
     Location,
@@ -826,6 +827,45 @@ async def get_findings(job_id: str):
         "finding_count": finding_count,
         "findings": findings,
     }
+
+
+@app.patch("/findings/{finding_id}/status")
+async def update_finding_status(finding_id: str, payload: FindingStatusUpdate):
+    if payload.status not in ("open", "accepted", "ignored"):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid status value. Must be 'open', 'accepted', or 'ignored'.",
+        )
+
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT id FROM findings WHERE id = ?", (finding_id,))
+        if not await cur.fetchone():
+            raise HTTPException(
+                status_code=404, detail=f"Finding '{finding_id}' not found."
+            )
+        try:
+            await db.execute(
+                "UPDATE findings SET status = ? WHERE id = ?",
+                (payload.status, finding_id),
+            )
+            await db.commit()
+        except Exception as e:
+            if "no such column: status" in str(e).lower():
+                await db.execute(
+                    "ALTER TABLE findings ADD COLUMN status TEXT DEFAULT 'open'"
+                )
+                await db.execute(
+                    "UPDATE findings SET status = ? WHERE id = ?",
+                    (payload.status, finding_id),
+                )
+                await db.commit()
+            else:
+                raise e
+    finally:
+        await db.close()
+
+    return {"id": finding_id, "status": payload.status}
 
 
 @app.get("/jobs/{job_id}/verify")

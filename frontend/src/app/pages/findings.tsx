@@ -28,6 +28,7 @@ import {
   SheetContent,
   SheetHeader,
   SheetTitle,
+  SheetDescription,
 } from "../components/ui/sheet";
 import {
   Tabs,
@@ -41,7 +42,7 @@ import { CodeBlock } from "../components/code-block";
 import { FilterChips } from "../components/filter-chips";
 import type { Finding } from "../data/sample-data";
 import { loadLastScan } from "../lib/scan-store";
-import { getJobFindings } from "../lib/api";
+import { getJobFindings, updateFindingStatus } from "../lib/api";
 import { mapBackendFindingToUi } from "../lib/mappers";
 import { cn } from "../components/ui/utils";
 
@@ -140,6 +141,24 @@ export function Findings() {
 
   const [selectedFindings, setSelectedFindings] = useState<Set<string>>(new Set());
   const [detailFinding, setDetailFinding] = useState<Finding | null>(null);
+  const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+
+  const handleStatusUpdate = async (findingId: string, newStatus: "open" | "accepted" | "ignored") => {
+    setIsUpdatingStatus(true);
+    try {
+      await updateFindingStatus(findingId, newStatus);
+      setFindings((prev) => 
+        prev.map((f) => f.id === findingId ? { ...f, status: newStatus } : f)
+      );
+      if (detailFinding && detailFinding.id === findingId) {
+        setDetailFinding({ ...detailFinding, status: newStatus });
+      }
+    } catch (err) {
+      console.error("Failed to update status", err);
+    } finally {
+      setIsUpdatingStatus(false);
+    }
+  };
 
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -329,7 +348,7 @@ export function Findings() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filteredFindings.map((finding) => (
+            {filteredFindings.slice(0, 150).map((finding) => (
               <TableRow
                 key={finding.id}
                 className="cursor-pointer hover:bg-muted/50"
@@ -392,7 +411,7 @@ export function Findings() {
       </Card>
 
       <div className="md:hidden space-y-3">
-        {filteredFindings.map((finding) => (
+        {filteredFindings.slice(0, 150).map((finding) => (
           <Card
             key={finding.id}
             className="hover:bg-muted/50 transition-colors cursor-pointer"
@@ -429,13 +448,12 @@ export function Findings() {
             <>
               <SheetHeader className="pb-4 border-b border-border/50">
                 <SheetTitle className="text-xl font-semibold tracking-tight">{detailFinding.title}</SheetTitle>
-                {/* 🚨 CRITICAL ACCESSIBILITY FIX: Added SheetDescription to prevent Radix layout crash */}
-                <div id="dialog-description" className="text-sm text-muted-foreground mt-1">
+                <SheetDescription className="text-sm text-muted-foreground mt-1">
                   Finding ID: <span className="font-mono">{detailFinding.id}</span>
-                </div>
+                </SheetDescription>
               </SheetHeader>
 
-              <div className="flex-1 overflow-y-auto mt-6 space-y-8" aria-describedby="dialog-description">
+              <div className="flex-1 overflow-y-auto mt-6 space-y-8">
                 <div className="flex flex-wrap items-center gap-3">
                   <SeverityChip severity={detailFinding.severity} />
                   <ToolBadge tool={detailFinding.tool} />
@@ -541,16 +559,51 @@ export function Findings() {
                 </Tabs>
               </div>
 
-              {/* Status Buttons - Pushed cleanly to the bottom */}
+            {/* Status Buttons - Dynamic and clickable */}
               <div className="flex gap-3 pt-6 mt-6 border-t border-border/50 shrink-0">
-                <Button variant="outline" className="flex-1 bg-muted/5 border-border/60 text-muted-foreground" disabled>
-                  <CheckCircle2 className="h-4 w-4 mr-2 opacity-50" />
-                  Accept Risk
-                </Button>
-                <Button variant="outline" className="flex-1 bg-muted/5 border-border/60 text-muted-foreground" disabled>
-                  <XCircle className="h-4 w-4 mr-2 opacity-50" />
-                  Ignore Finding
-                </Button>
+                {detailFinding.status === 'accepted' ? (
+                   <Button 
+                    variant="outline" 
+                    className="flex-1 border-status-success text-status-success bg-status-success/10 hover:bg-status-success/20 hover:text-status-success"
+                    onClick={() => handleStatusUpdate(detailFinding.id, 'open')}
+                    disabled={isUpdatingStatus}
+                  >
+                    {isUpdatingStatus ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CheckCircle2 className="h-4 w-4 mr-2" />}
+                    Accepted (Click to Re-open)
+                  </Button>
+                ) : (
+                  <Button 
+                    variant="outline" 
+                    className="flex-1 hover:bg-status-success/10 hover:text-status-success hover:border-status-success/50 transition-colors"
+                    onClick={() => handleStatusUpdate(detailFinding.id, 'accepted')}
+                    disabled={isUpdatingStatus}
+                  >
+                    {isUpdatingStatus ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CheckCircle2 className="h-4 w-4 mr-2" />}
+                    Accept Risk
+                  </Button>
+                )}
+
+                {detailFinding.status === 'ignored' ? (
+                   <Button 
+                    variant="outline" 
+                    className="flex-1 border-muted-foreground text-muted-foreground bg-muted hover:bg-muted/80"
+                    onClick={() => handleStatusUpdate(detailFinding.id, 'open')}
+                    disabled={isUpdatingStatus}
+                  >
+                    {isUpdatingStatus ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <XCircle className="h-4 w-4 mr-2" />}
+                    Ignored (Click to Re-open)
+                  </Button>
+                ) : (
+                  <Button 
+                    variant="outline" 
+                    className="flex-1 hover:bg-muted/50 transition-colors"
+                    onClick={() => handleStatusUpdate(detailFinding.id, 'ignored')}
+                    disabled={isUpdatingStatus}
+                  >
+                    {isUpdatingStatus ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <XCircle className="h-4 w-4 mr-2" />}
+                    Ignore Finding
+                  </Button>
+                )}
               </div>
             </>
           )}
