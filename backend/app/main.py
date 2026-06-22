@@ -446,11 +446,12 @@ async def _run_single_scan_task(
                         message,
                         pkg_name,
                         pkg_version,
+                        f.ml_score,
                     )
                 )
             if rows:
                 await db.executemany(
-                    "INSERT INTO findings (id, job_id, rule_id, severity, category, file_path, line_number, cwe, scanner, message, package_name, package_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO findings (id, job_id, rule_id, severity, category, file_path, line_number, cwe, scanner, message, package_name, package_version, ml_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     rows,
                 )
             await db.execute(
@@ -802,7 +803,7 @@ async def get_findings(job_id: str):
         cur = await db.execute(
             """
             SELECT id, rule_id, severity, category, file_path,
-                   line_number, cwe, scanner, message, package_name, package_version, created_at
+                   line_number, cwe, scanner, message, package_name, package_version, created_at, ml_score
             FROM findings
             WHERE job_id = ?
             ORDER BY created_at
@@ -1089,12 +1090,13 @@ async def _run_repo_scan_task(
                             message,
                             pkg_name,
                             pkg_version,
+                            f.ml_score,
                         )
                     )
 
                 if rows:
                     await db.executemany(
-                        "INSERT INTO findings (id, job_id, rule_id, severity, category, file_path, line_number, cwe, scanner, message, package_name, package_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO findings (id, job_id, rule_id, severity, category, file_path, line_number, cwe, scanner, message, package_name, package_version, ml_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         rows,
                     )
 
@@ -1404,7 +1406,8 @@ async def get_org_findings(org_job_id: str):
                 f.severity, 
                 f.file_path, 
                 f.line_number, 
-                f.cwe
+                f.cwe,
+                f.ml_score
             FROM findings f
             JOIN jobs j ON f.job_id = j.job_id
             WHERE j.org_job_id = ?

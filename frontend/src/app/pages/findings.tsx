@@ -113,6 +113,30 @@ function ExportReportButton({ scanId }: { scanId: string }) {
   );
 }
 
+export function MlScorePill({ score }: { score: number }) {
+  const percentage = Math.round(score * 100);
+
+  let colorClasses = "";
+  if (score >= 0.75) {
+    colorClasses = "bg-rose-500/10 border-rose-500/20 text-rose-600 dark:bg-rose-500/20 dark:border-rose-500/30 dark:text-rose-400";
+  } else if (score >= 0.5) {
+    colorClasses = "bg-amber-500/10 border-amber-500/20 text-amber-600 dark:bg-amber-500/20 dark:border-amber-500/30 dark:text-amber-400";
+  } else {
+    colorClasses = "bg-slate-500/10 border-slate-500/20 text-slate-600 dark:bg-slate-500/20 dark:border-slate-500/30 dark:text-slate-400";
+  }
+
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-bold font-mono tracking-wide shadow-sm select-none",
+        colorClasses
+      )}
+    >
+      {percentage}%
+    </span>
+  );
+}
+
 export function Findings() {
   const navigate = useNavigate();
 
@@ -142,6 +166,7 @@ export function Findings() {
   const [selectedFindings, setSelectedFindings] = useState<Set<string>>(new Set());
   const [detailFinding, setDetailFinding] = useState<Finding | null>(null);
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+  const [sortBy, setSortBy] = useState<"severity" | "ml_score">("severity");
 
   const handleStatusUpdate = async (findingId: string, newStatus: "open" | "accepted" | "ignored") => {
     setIsUpdatingStatus(true);
@@ -223,7 +248,7 @@ export function Findings() {
   const filteredFindings = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
 
-    return findings.filter((f) => {
+    const filtered = findings.filter((f) => {
       const matchesQuery =
         q.length === 0 ||
         f.title.toLowerCase().includes(q) ||
@@ -235,7 +260,43 @@ export function Findings() {
 
       return matchesQuery && matchesSeverity;
     });
-  }, [findings, searchQuery, activeSeverities]);
+
+    const severityOrder: Record<string, number> = {
+      critical: 4,
+      high: 3,
+      medium: 2,
+      low: 1,
+      info: 0,
+    };
+
+    if (sortBy === "ml_score") {
+      filtered.sort((a, b) => {
+        const scoreA = a.ml_score ?? 0;
+        const scoreB = b.ml_score ?? 0;
+        if (scoreB !== scoreA) {
+          return scoreB - scoreA;
+        }
+        // secondary sort: severity
+        const sevA = severityOrder[a.severity] ?? 0;
+        const sevB = severityOrder[b.severity] ?? 0;
+        return sevB - sevA;
+      });
+    } else {
+      filtered.sort((a, b) => {
+        const sevA = severityOrder[a.severity] ?? 0;
+        const sevB = severityOrder[b.severity] ?? 0;
+        if (sevB !== sevA) {
+          return sevB - sevA;
+        }
+        // secondary sort: ml_score
+        const scoreA = a.ml_score ?? 0;
+        const scoreB = b.ml_score ?? 0;
+        return scoreB - scoreA;
+      });
+    }
+
+    return filtered;
+  }, [findings, searchQuery, activeSeverities, sortBy]);
 
   if (isLoadingFindings) {
     return (
@@ -289,10 +350,38 @@ export function Findings() {
                 className="pl-9"
               />
             </div>
-            <Button variant="outline">
-              <Filter className="h-4 w-4 mr-2" />
-              More Filters
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex items-center rounded-lg border border-border bg-muted/20 p-1 text-muted-foreground">
+                <button
+                  type="button"
+                  onClick={() => setSortBy("severity")}
+                  className={cn(
+                    "inline-flex items-center justify-center rounded-md px-3 py-1.5 text-xs font-semibold ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 cursor-pointer",
+                    sortBy === "severity"
+                      ? "bg-background text-foreground shadow-sm"
+                      : "hover:bg-muted/50 hover:text-foreground"
+                  )}
+                >
+                  Severity
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSortBy("ml_score")}
+                  className={cn(
+                    "inline-flex items-center justify-center rounded-md px-3 py-1.5 text-xs font-semibold ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 cursor-pointer",
+                    sortBy === "ml_score"
+                      ? "bg-background text-foreground shadow-sm"
+                      : "hover:bg-muted/50 hover:text-foreground"
+                  )}
+                >
+                  ML Score
+                </button>
+              </div>
+              <Button variant="outline">
+                <Filter className="h-4 w-4 mr-2" />
+                More Filters
+              </Button>
+            </div>
           </div>
           <div className="mt-4">
             <FilterChips filters={filters} onToggle={toggleFilter} />
@@ -361,7 +450,12 @@ export function Findings() {
                   />
                 </TableCell>
                 <TableCell>
-                  <SeverityChip severity={finding.severity} />
+                  <div className="flex items-center gap-2">
+                    <SeverityChip severity={finding.severity} />
+                    {finding.ml_score !== undefined && finding.ml_score !== null && (
+                      <MlScorePill score={finding.ml_score} />
+                    )}
+                  </div>
                 </TableCell>
                 <TableCell>
                   <div className="font-medium max-w-md truncate">
@@ -427,6 +521,9 @@ export function Findings() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-2">
                     <SeverityChip severity={finding.severity} />
+                    {finding.ml_score !== undefined && finding.ml_score !== null && (
+                      <MlScorePill score={finding.ml_score} />
+                    )}
                     <ToolBadge tool={finding.tool} />
                   </div>
                   <div className="font-medium mb-1 line-clamp-2">
@@ -456,6 +553,9 @@ export function Findings() {
               <div className="flex-1 overflow-y-auto mt-6 space-y-8">
                 <div className="flex flex-wrap items-center gap-3">
                   <SeverityChip severity={detailFinding.severity} />
+                  {detailFinding.ml_score !== undefined && detailFinding.ml_score !== null && (
+                    <MlScorePill score={detailFinding.ml_score} />
+                  )}
                   <ToolBadge tool={detailFinding.tool} />
                   <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-muted/30 text-muted-foreground text-[11px] font-bold uppercase tracking-wider">
                     {detailFinding.confidence}% Confidence

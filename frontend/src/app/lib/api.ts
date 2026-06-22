@@ -54,6 +54,7 @@ features?: Record<string, unknown>;
   code?: string;
   suggested_fix?: string;
   references?: string[];
+  ml_score?: number;
 };
 
 export type ScanInitResponse = {
