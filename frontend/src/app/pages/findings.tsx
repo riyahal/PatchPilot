@@ -240,12 +240,19 @@ export function Findings() {
     }
   };
 
+  const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
+  const [selectedStatuses, setSelectedStatuses] = useState<Set<string>>(new Set());
+  const [selectedTools, setSelectedTools] = useState<Set<string>>(new Set());
+
+  const availableTools = useMemo(() => Array.from(new Set(findings.map(f => f.tool).filter(Boolean))), [findings]);
+  const availableStatuses = ["open", "accepted", "ignored"];
+
   const activeSeverities = useMemo(
     () => new Set(filters.filter((f) => f.active).map((f) => f.id)),
     [filters],
   );
 
-  const filteredFindings = useMemo(() => {
+    const filteredFindings = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
 
     const filtered = findings.filter((f) => {
@@ -257,8 +264,14 @@ export function Findings() {
 
       const matchesSeverity =
         activeSeverities.size === 0 || activeSeverities.has(f.severity);
+        
+      const matchesStatus = 
+        selectedStatuses.size === 0 || selectedStatuses.has(f.status);
+        
+      const matchesTool = 
+        selectedTools.size === 0 || selectedTools.has(f.tool);
 
-      return matchesQuery && matchesSeverity;
+      return matchesQuery && matchesSeverity && matchesStatus && matchesTool;
     });
 
     const severityOrder: Record<string, number> = {
@@ -296,7 +309,7 @@ export function Findings() {
     }
 
     return filtered;
-  }, [findings, searchQuery, activeSeverities, sortBy]);
+  }, [findings, searchQuery, activeSeverities, sortBy, selectedStatuses, selectedTools]);
 
   if (isLoadingFindings) {
     return (
@@ -377,7 +390,7 @@ export function Findings() {
                   ML Score
                 </button>
               </div>
-              <Button variant="outline">
+              <Button variant="outline" onClick={() => setIsFilterSheetOpen(true)}>
                 <Filter className="h-4 w-4 mr-2" />
                 More Filters
               </Button>
@@ -707,6 +720,76 @@ export function Findings() {
               </div>
             </>
           )}
+    </SheetContent>
+      </Sheet>
+
+      <Sheet open={isFilterSheetOpen} onOpenChange={setIsFilterSheetOpen}>
+        <SheetContent side="right" className="w-full sm:max-w-md p-6">
+          <SheetHeader className="pb-4 border-b border-border/50">
+            <SheetTitle>Advanced Filters</SheetTitle>
+            <SheetDescription>Filter findings by status and tool</SheetDescription>
+          </SheetHeader>
+          
+          <div className="py-6 space-y-8">
+            <div className="space-y-4">
+              <h3 className="text-sm font-semibold tracking-tight">Status</h3>
+              <div className="space-y-3">
+                {availableStatuses.map(status => (
+                  <div key={status} className="flex items-center space-x-3">
+                    <Checkbox
+                      id={`status-${status}`}
+                      checked={selectedStatuses.has(status)}
+                      onCheckedChange={(checked) => {
+                        const next = new Set(selectedStatuses);
+                        if (checked) next.add(status);
+                        else next.delete(status);
+                        setSelectedStatuses(next);
+                      }}
+                    />
+                    <label htmlFor={`status-${status}`} className="text-sm font-medium leading-none capitalize">
+                      {status}
+                    </label>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <h3 className="text-sm font-semibold tracking-tight">Tool</h3>
+              <div className="space-y-3">
+                {availableTools.map(tool => (
+                  <div key={tool} className="flex items-center space-x-3">
+                    <Checkbox
+                      id={`tool-${tool}`}
+                      checked={selectedTools.has(tool)}
+                      onCheckedChange={(checked) => {
+                        const next = new Set(selectedTools);
+                        if (checked) next.add(tool);
+                        else next.delete(tool);
+                        setSelectedTools(next);
+                      }}
+                    />
+                    <label htmlFor={`tool-${tool}`} className="text-sm font-medium leading-none capitalize">
+                      {tool}
+                    </label>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-border/50">
+              <Button 
+                variant="outline" 
+                className="w-full"
+                onClick={() => {
+                  setSelectedStatuses(new Set());
+                  setSelectedTools(new Set());
+                }}
+              >
+                Clear All Advanced Filters
+              </Button>
+            </div>
+          </div>
         </SheetContent>
       </Sheet>
     </div>
