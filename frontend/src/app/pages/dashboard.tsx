@@ -1,7 +1,7 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { Upload, Link as LinkIcon, Clock, Trash2, Download, Loader2, CheckCircle, AlertTriangle, Building2, Layers } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
-import { scanRepoUrl, scanZip, downloadAuditReport, scanOrganization, getOrgJobStatus } from "../lib/api";
+import { scanRepoUrl, scanZip, downloadAuditReport, scanOrganization, getOrgJobStatus, abortOrganizationScan, API_BASE } from "../lib/api";
 import { saveLastScan } from "../lib/scan-store";
 import { Button } from "../components/ui/button";
 import { TrendChart } from "../components/trend-chart";
@@ -25,6 +25,7 @@ import {
 import { StatusPill } from "../components/status-pill";
 import { Input } from "../components/ui/input";
 import { cn } from "../components/ui/utils";
+import { ProgressStepper } from "../components/progress-stepper";
 
 type UiJobStatus = "completed" | "running" | "failed" | "pending";
 
@@ -151,8 +152,17 @@ export function Dashboard() {
   const [orgUrl, setOrgUrl] = useState("");
   const [activeOrgJobId, setActiveOrgJobId] = useState<string | null>(null);
   const [orgStatusData, setOrgStatusData] = useState<any>(null);
-  const [pollingIntervalId, setPollingIntervalId] = useState<any>(null);
+  const [eventSource, setEventSource] = useState<EventSource | null>(null);
+  const [isAborting, setIsAborting] = useState(false);
   const [expectedRepoCount, setExpectedRepoCount] = useState<number>(0);
+
+  useEffect(() => {
+    return () => {
+      if (eventSource) {
+        eventSource.close();
+      }
+    };
+  }, [eventSource]);
 
   const formatTimestamp = (timestamp: string) => {
     const date = new Date(timestamp);
@@ -186,21 +196,63 @@ export function Dashboard() {
     navigate("/findings");
   };
 
+  const [activeSingleScanId, setActiveSingleScanId] = useState<string | null>(null);
+  const [singleScanState, setSingleScanState] = useState<any>(null);
+
+  const watchSingleScan = (jobId: string, projectName: string) => {
+    setActiveSingleScanId(jobId);
+    setSingleScanState({ sast: 'pending', dependency: 'pending', secrets: 'pending', status: 'running' });
+
+    if (eventSource) eventSource.close();
+    const sse = new EventSource(`${API_BASE}/api/scans/${jobId}/stream`);
+
+    sse.onmessage = (event) => {
+      const parsed = JSON.parse(event.data);
+      if (parsed.error) {
+        sse.close();
+        setScanLoading(false);
+        setScanError("Live scan tracking failed.");
+        setActiveSingleScanId(null);
+        return;
+      }
+      setSingleScanState(parsed);
+
+if (parsed.status === "completed" || parsed.status === "failed") {
+        sse.close();
+        setTimeout(async () => {
+          try {
+            const res = await fetch(`${API_BASE}/jobs/${jobId}/findings`);
+            const data = await res.json();
+            setScanLoading(false);
+            handleScanSuccess({ job_id: jobId, project_name: projectName, findings: data.findings || [] });
+            setActiveSingleScanId(null);
+          } catch (err) {
+            setScanLoading(false);
+            handleScanSuccess({ job_id: jobId, project_name: projectName, findings: [] });
+            setActiveSingleScanId(null);
+          }
+        }, 1000);
+      }
+    };
+    sse.onerror = () => {
+      if (sse.readyState === EventSource.CLOSED) setScanLoading(false);
+    };
+    setEventSource(sse);
+  };
+
   const handleZipFile = async (file: File) => {
     if (!file.name.toLowerCase().endsWith(".zip")) {
       setScanError("Please upload a .zip file.");
       return;
     }
-
     setScanError(null);
     setScanLoading(true);
 
     try {
-      const scan = await scanZip(file, file.name.replace(/\.zip$/i, ""));
-      handleScanSuccess(scan);
+      const initRes = await scanZip(file, file.name.replace(/\.zip$/i, ""));
+      watchSingleScan(initRes.job_id, initRes.project_name);
     } catch (e: any) {
       setScanError(e?.message ?? "Scan failed");
-    } finally {
       setScanLoading(false);
     }
   };
@@ -208,25 +260,20 @@ export function Dashboard() {
   const handleImportFromUrl = async () => {
     const url = repoUrl.trim();
     if (!url) {
-      setScanError(
-        "Please paste a GitHub repo URL (example: https://github.com/owner/repo).",
-      );
+      setScanError("Please paste a GitHub repo URL.");
       return;
     }
-
     setScanError(null);
     setScanLoading(true);
 
     try {
-      const scan = await scanRepoUrl(url, repoRef || "main", "project");
-      handleScanSuccess(scan);
-
+      const initRes = await scanRepoUrl(url, repoRef || "main", "project");
       setUrlDialogOpen(false);
       setRepoUrl("");
       setRepoRef("main");
+      watchSingleScan(initRes.job_id, initRes.project_name);
     } catch (e: any) {
       setScanError(e?.message ?? "Import from URL failed");
-    } finally {
       setScanLoading(false);
     }
   };
@@ -240,6 +287,10 @@ export function Dashboard() {
 
     setScanError(null);
     setScanLoading(true);
+    if (eventSource) {
+      eventSource.close();
+      setEventSource(null);
+    }
 
     try {
       const data = await scanOrganization(url);
@@ -249,25 +300,63 @@ export function Dashboard() {
 
       getOrgJobStatus(data.org_job_id).then(setOrgStatusData).catch(() => {});
 
-      const interval = setInterval(async () => {
-        try {
-          const statusRes = await getOrgJobStatus(data.org_job_id);
-          setOrgStatusData(statusRes);
+      const sse = new EventSource(`${API_BASE}/api/scans/org/${data.org_job_id}/stream`);
+      
+      sse.onmessage = (event) => {
+        const parsed = JSON.parse(event.data);
+        if (parsed.error) {
+          sse.close();
+          setScanLoading(false);
+          return;
+        }
+        
+        setOrgStatusData(parsed);
+        const isFullyFinished = 
+          ["completed", "failed"].includes(parsed.status) || 
+          (parsed.status === "aborted" && !parsed.repos.some((r: any) => r.status === "scanning" || r.status === "pending"));
 
-          if (statusRes.status === "completed") {
-            clearInterval(interval);
-            setScanLoading(false);
-          }
-        } catch (err) {
-          clearInterval(interval);
+        if (isFullyFinished) {
+          sse.close();
           setScanLoading(false);
         }
-      }, 3000);
+      };
 
-      setPollingIntervalId(interval);
+      sse.onerror = () => {
+        if (sse.readyState === EventSource.CLOSED) {
+          setScanLoading(false);
+        }
+      };
+
+      setEventSource(sse);
     } catch (e: any) {
       setScanError(e?.message ?? "Organization batch scan failed");
       setScanLoading(false);
+    }
+  };
+
+const handleAbortScan = async (mode: "pending" | "force") => {
+    if (!activeOrgJobId) return;
+    if (mode === "force") {
+      if (eventSource) {
+        eventSource.close();
+        setEventSource(null);
+      }
+      setActiveOrgJobId(null);
+      setOrgStatusData(null);
+      setOrgUrl("");
+      setScanLoading(false);
+    } else {
+      setIsAborting(true);
+    }
+    
+    try {
+      await abortOrganizationScan(activeOrgJobId, mode);
+    } catch (err) {
+      console.error("Failed to abort scan", err);
+    } finally {
+      if (mode !== "force") {
+        setIsAborting(false);
+      }
     }
   };
 
@@ -487,6 +576,80 @@ export function Dashboard() {
             </div>
           )}
 
+        {activeSingleScanId && singleScanState && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md animate-in fade-in duration-300">
+            <div className="w-full max-w-3xl rounded-xl bg-background border border-border/50 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+              <div className="p-6 border-b border-border/30 bg-muted/10 flex items-center justify-between">
+                <div>
+                  <h2 className="font-semibold text-xl tracking-tight text-foreground">Security Scan Timeline</h2>
+                  <p className="text-xs text-muted-foreground font-mono mt-1.5 px-2 py-0.5 bg-muted/50 rounded inline-flex items-center gap-2">
+                    <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse"></span>
+                    {activeSingleScanId}
+                  </p>
+                </div>
+                <Loader2 className={cn("h-6 w-6 text-primary", singleScanState.status === "running" && "animate-spin")} />
+              </div>
+
+              <div className="p-10 bg-gradient-to-b from-background to-muted/5">
+                <div className="relative pl-8 border-l-2 border-border/30 space-y-12">
+                  
+                  <div className="relative animate-in fade-in slide-in-from-left-4 duration-500">
+                    <div className={cn("absolute -left-[41px] top-1 h-5 w-5 rounded-full border-4 bg-background", singleScanState.sast === "completed" ? "border-emerald-500" : singleScanState.sast === "in_progress" ? "border-primary shadow-[0_0_15px_rgba(59,130,246,0.5)]" : "border-border")} />
+                    <div className="flex flex-col bg-muted/5 p-4 rounded-lg border border-border/40 hover:border-primary/30 transition-colors">
+                      <div className="flex justify-between items-start mb-1">
+                        <span className={cn("text-base font-semibold", singleScanState.sast === "upcoming" && "text-muted-foreground")}>Static Application Security Testing (SAST)</span>
+                        <span className="text-xs font-mono px-2 py-1 bg-muted/50 rounded text-muted-foreground">Semgrep</span>
+                      </div>
+                      {singleScanState.sast === "in_progress" && <span className="text-sm text-primary mt-1 animate-pulse">Analyzing source code patterns...</span>}
+                      {singleScanState.sast === "completed" && <span className="text-sm text-emerald-500 mt-1 flex items-center gap-1.5">✓ Source analysis complete</span>}
+                      {singleScanState.sast === "upcoming" && <span className="text-sm text-muted-foreground mt-1">Pending initialization</span>}
+                    </div>
+                  </div>
+
+                  <div className={cn("relative transition-all duration-700", singleScanState.sast !== "completed" && "opacity-40 grayscale")}>
+                    <div className={cn("absolute -left-[41px] top-1 h-5 w-5 rounded-full border-4 bg-background", singleScanState.dependency === "completed" ? "border-emerald-500" : singleScanState.dependency === "in_progress" ? "border-primary shadow-[0_0_15px_rgba(59,130,246,0.5)]" : "border-border")} />
+                    <div className="flex flex-col bg-muted/5 p-4 rounded-lg border border-border/40 hover:border-primary/30 transition-colors">
+                      <div className="flex justify-between items-start mb-1">
+                        <span className={cn("text-base font-semibold", singleScanState.dependency === "upcoming" && "text-muted-foreground")}>Dependency Vulnerability Scan</span>
+                        <span className="text-xs font-mono px-2 py-1 bg-muted/50 rounded text-muted-foreground">OSV-Scanner</span>
+                      </div>
+                      {singleScanState.dependency === "in_progress" && <span className="text-sm text-primary mt-1 animate-pulse">Cross-referencing global CVE databases...</span>}
+                      {singleScanState.dependency === "completed" && <span className="text-sm text-emerald-500 mt-1 flex items-center gap-1.5">✓ Dependency check verified</span>}
+                      {singleScanState.dependency === "upcoming" && <span className="text-sm text-muted-foreground mt-1">Waiting for SAST completion</span>}
+                    </div>
+                  </div>
+
+                  <div className={cn("relative transition-all duration-700", singleScanState.dependency !== "completed" && "opacity-40 grayscale")}>
+                    <div className={cn("absolute -left-[41px] top-1 h-5 w-5 rounded-full border-4 bg-background", singleScanState.secrets === "completed" ? "border-emerald-500" : singleScanState.secrets === "in_progress" ? "border-primary shadow-[0_0_15px_rgba(59,130,246,0.5)]" : "border-border")} />
+                    <div className="flex flex-col bg-muted/5 p-4 rounded-lg border border-border/40 hover:border-primary/30 transition-colors">
+                      <div className="flex justify-between items-start mb-1">
+                        <span className={cn("text-base font-semibold", singleScanState.secrets === "upcoming" && "text-muted-foreground")}>Secrets & Entropy Detection</span>
+                        <div className="flex gap-2">
+                          <span className="text-xs font-mono px-2 py-1 bg-muted/50 rounded text-muted-foreground">Gitleaks</span>
+                          <span className="text-xs font-mono px-2 py-1 bg-muted/50 rounded text-muted-foreground">Entropy</span>
+                        </div>
+                      </div>
+                      {singleScanState.secrets === "in_progress" && <span className="text-sm text-primary mt-1 animate-pulse">Scanning for exposed keys and high-entropy strings...</span>}
+                      {singleScanState.secrets === "completed" && <span className="text-sm text-emerald-500 mt-1 flex items-center gap-1.5">✓ Secrets scan complete</span>}
+                      {singleScanState.secrets === "upcoming" && <span className="text-sm text-muted-foreground mt-1">Waiting for dependency scan</span>}
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+
+              <div className="p-6 border-t border-border/30 bg-muted/10 flex justify-between items-center">
+                 <p className="text-sm text-muted-foreground">
+                  {singleScanState.status === "completed" ? "Finalizing report..." : "Background processes running. Do not close this window."}
+                 </p>
+                 <span className={cn("text-xs font-mono uppercase tracking-widest px-3 py-1.5 rounded-full border", singleScanState.status === "running" ? "bg-primary/10 text-primary border-primary/20" : "bg-emerald-500/10 text-emerald-500 border-emerald-500/20")}>
+                    {singleScanState.status}
+                 </span>
+              </div>
+            </div>
+          </div>
+        )}
+
         {activeOrgJobId && orgStatusData && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
               <div className="w-full max-w-2xl rounded-lg bg-background border border-border shadow-2xl flex flex-col max-h-[85vh] animate-in fade-in zoom-in-95 duration-200">
@@ -507,6 +670,8 @@ export function Dashboard() {
                       "text-xs uppercase px-3 py-1 rounded font-mono font-bold border",
                       orgStatusData.status === "completed" 
                         ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" 
+                        : orgStatusData.status === "aborted"
+                        ? "bg-rose-500/10 text-rose-500 border-rose-500/20"
                         : "bg-primary/10 text-primary border-primary/20"
                     )}>
                       {orgStatusData.status}
@@ -530,7 +695,11 @@ export function Dashboard() {
                           <div className="flex items-center gap-3">
                             {repo.status === "scanning" && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
                             {repo.status === "completed" && <CheckCircle className="w-4 h-4 text-emerald-500" />}
-                            <span className="text-xs font-mono text-muted-foreground capitalize bg-background px-2.5 py-1 rounded border shadow-sm w-24 text-center">
+                            {repo.status === "aborted" && <AlertTriangle className="w-4 h-4 text-rose-500" />}
+                            <span className={cn(
+                              "text-xs font-mono capitalize bg-background px-2.5 py-1 rounded border shadow-sm w-24 text-center",
+                              repo.status === "aborted" ? "text-rose-500 border-rose-500/20" : "text-muted-foreground"
+                            )}>
                               {repo.status}
                             </span>
                           </div>
@@ -541,22 +710,47 @@ export function Dashboard() {
                 </div>
 
                 {/* Modal Footer */}
-                {orgStatusData.status === "completed" && (
-                  <div className="p-6 border-t bg-muted/10 rounded-b-lg flex justify-end">
+                <div className="p-6 border-t bg-muted/10 rounded-b-lg flex justify-end gap-3">
+                  {(orgStatusData.status === "scanning" || orgStatusData.status === "pending") && (
+                    <>
+                      <Button 
+                        variant="outline" 
+                        onClick={() => handleAbortScan("pending")}
+                        disabled={isAborting}
+                        className="transition-all cursor-pointer hover:bg-muted hover:shadow-sm"
+                      >
+                        {isAborting && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+                        Cancel Pending Scans
+                      </Button>
+                      
+                      <Button 
+                        variant="destructive" 
+                        onClick={() => handleAbortScan("force")}
+                        disabled={isAborting}
+                        className="transition-all cursor-pointer hover:bg-red-600 hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 active:scale-95"
+                      >
+                        {isAborting && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+                        Force Cancel Scan
+                      </Button>
+                    </>
+                  )}
+
+                  {["completed", "failed", "aborted"].includes(orgStatusData.status) && (
                     <Button 
                       size="lg"
+                      className="cursor-pointer"
                       onClick={() => {
-                        if (pollingIntervalId) clearInterval(pollingIntervalId);
+                        if (eventSource) eventSource.close();
                         setActiveOrgJobId(null);
                         setOrgStatusData(null);
                         setOrgUrl("");
-                        navigate("/findings");
+                        navigate(`/org-findings/${activeOrgJobId}`);
                       }}
                     >
                       View Collected Analytics
                     </Button>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             </div>
           )}

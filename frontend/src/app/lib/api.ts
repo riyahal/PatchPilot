@@ -1,4 +1,4 @@
-const API_BASE =
+export const API_BASE =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ||
   "http://localhost:8000";
 
@@ -54,6 +54,13 @@ features?: Record<string, unknown>;
   code?: string;
   suggested_fix?: string;
   references?: string[];
+  ml_score?: number;
+};
+
+export type ScanInitResponse = {
+  job_id: string;
+  project_name: string;
+  status: string;
 };
 
 export async function scanZip(file: File, projectName = "project") {
@@ -66,11 +73,8 @@ export async function scanZip(file: File, projectName = "project") {
     body: form,
   });
 
-  if (!res.ok) {
-    throw new Error(await res.text());
-  }
-
-  return (await res.json()) as ScanResponse;
+  if (!res.ok) throw new Error(await res.text());
+  return (await res.json()) as ScanInitResponse;
 }
 
 export async function scanRepoUrl(
@@ -93,7 +97,23 @@ export async function scanRepoUrl(
     throw new Error(err?.detail ?? "Import from URL failed");
   }
 
-  return (await res.json()) as ScanResponse;
+  return (await res.json()) as ScanInitResponse;
+}
+export async function getJobFindings(jobId: string): Promise<BackendFinding[]> {
+  const res = await fetch(`${API_BASE}/jobs/${jobId}/findings`);
+  if (!res.ok) throw new Error(await res.text());
+  return (await res.json()) as BackendFinding[];
+}
+
+export async function updateFindingStatus(findingId: string, status: "open" | "accepted" | "ignored") {
+  const res = await fetch(`${API_BASE}/findings/${findingId}/status`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
 }
 
 export async function fix(jobId: string, findingIds: string[]) {
@@ -237,12 +257,12 @@ export async function downloadAuditReport(jobId: string) {
 export type RepoStatus = {
   job_id: string;
   project_name: string;
-  status: "pending" | "scanning" | "completed" | "failed";
+  status: "pending" | "scanning" | "completed" | "failed" | "aborted";
 };
 
 export type OrgJobStatusResponse = {
   org_job_id: string;
-  status: "pending" | "scanning" | "completed";
+  status: "pending" | "scanning" | "completed" | "failed" | "aborted";
   repos: RepoStatus[];
 };
 
@@ -269,3 +289,49 @@ export async function getOrgJobStatus(orgJobId: string) {
 
   return (await res.json()) as OrgJobStatusResponse;
 }
+
+export const abortOrganizationScan = async (orgJobId: string, mode: "pending" | "force" = "pending") => {
+  const response = await fetch(`${API_BASE}/api/scans/org/${orgJobId}/abort?mode=${mode}`, {
+    method: "POST",
+  });
+  if (!response.ok) throw new Error("Failed to abort scan");
+  return response.json();
+};
+
+export async function getOrgSummary(orgJobId: string) {
+  const res = await fetch(`${API_BASE}/api/scans/org/${orgJobId}/summary`);
+  if (!res.ok) throw new Error("Failed to fetch organization summary");
+  return res.json();
+}
+
+export async function getOrgFindings(orgJobId: string) {
+  const res = await fetch(`${API_BASE}/api/scans/org/${orgJobId}/findings`);
+  if (!res.ok) throw new Error("Failed to fetch organization findings");
+  return res.json();
+}
+
+export async function downloadOrgAuditReport(orgJobId: string) {
+  const res = await fetch(`${API_BASE}/api/scans/org/${orgJobId}/report/pdf`);
+  
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  const blob = await res.blob();
+  
+  const cd = res.headers.get("content-disposition") || "";
+  const match = cd.match(/filename="?([^"]+)"?/i);
+  const filename = match?.[1] || `PatchPilot-Org-Audit-${orgJobId}.pdf`;
+
+  return { blob, filename };
+}
+
+export const getOrgBlastRadius = async (orgJobId: string) => {
+  const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  const response = await fetch(`${baseUrl}/api/scans/org/${orgJobId}/blast-radius`);
+  
+  if (!response.ok) {
+    throw new Error('Failed to fetch blast radius data');
+  }
+  return response.json();
+};
