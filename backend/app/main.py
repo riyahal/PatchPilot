@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -187,22 +188,31 @@ def _extract_dependencies(repo_dir: Path) -> List[tuple[str, str]]:
 ACTIVE_SCANS = {}
 
 
-def _scan_repo_dir(repo_dir: Path, progress_cb=None):
+def _scan_repo_dir(repo_dir: Path, progress_cb=None, job_dir: Path = None):
     if progress_cb:
         progress_cb("sast", "in_progress")
-    semgrep = run_semgrep(repo_dir)
+
+    semgrep_raw_out = (job_dir / "raw" / "semgrep.json") if job_dir else None
+    semgrep = run_semgrep(repo_dir, raw_out=semgrep_raw_out)
+
     if progress_cb:
         progress_cb("sast", "completed")
 
     if progress_cb:
         progress_cb("dependency", "in_progress")
-    osv = run_osv_scanner(repo_dir)
+
+    osv_raw_out = (job_dir / "raw" / "osv.json") if job_dir else None
+    osv = run_osv_scanner(repo_dir, raw_out=osv_raw_out)
+
     if progress_cb:
         progress_cb("dependency", "completed")
 
     if progress_cb:
         progress_cb("secrets", "in_progress")
-    gitleaks = run_gitleaks(repo_dir)
+
+    gitleaks_raw_out = (job_dir / "raw" / "gitleaks.json") if job_dir else None
+    gitleaks = run_gitleaks(repo_dir, raw_out=gitleaks_raw_out)
+
     if progress_cb:
         progress_cb("secrets", "completed")
 
@@ -228,6 +238,10 @@ def _scan_repo_dir(repo_dir: Path, progress_cb=None):
 
 
 def finding_key(f: Finding):
+    """Generate a stable identifier for a finding.
+    Uses rule identifier, file path, and start line so that findings from the
+    same rule on different lines are treated as distinct findings.
+    """
     metadata = f.metadata or {}
 
     rule_id = (
@@ -397,8 +411,11 @@ async def _run_single_scan_task(
         finally:
             await db.close()
 
+        job_dir = WORK_ROOT / job_id
         semgrep, osv, gitleaks, entropy, findings = await run_in_threadpool(
-            _scan_repo_dir, scan_root, update_progress
+            functools.partial(
+                _scan_repo_dir, scan_root, update_progress, job_dir=job_dir
+            )
         )
 
         raw_finding_count = len(findings)
@@ -691,7 +708,11 @@ def evidence_pack(job_id: str = Form(...), project_name: str = Form("project")):
     ensure_dir(out_dir)
 
     pack_path = build_evidence_pack(
-        repo_dir=repo_dir, out_dir=out_dir, project_name=project_name, job_id=job_id
+        repo_dir=repo_dir,
+        out_dir=out_dir,
+        project_name=project_name,
+        job_id=job_id,
+        job_dir=job_dir,
     )
     return FileResponse(
         path=str(pack_path), filename=pack_path.name, media_type="application/zip"
@@ -1074,7 +1095,9 @@ async def _run_repo_scan_task(
             unzip_to_dir(archive_path, repo_dir)
 
             scan_root = _maybe_use_single_top_folder(repo_dir)
-            semgrep, osv, gitleaks, entropy, findings = _scan_repo_dir(scan_root)
+            semgrep, osv, gitleaks, entropy, findings = _scan_repo_dir(
+                scan_root, job_dir=job_dir
+            )
 
             raw_finding_count = len(findings)
 
