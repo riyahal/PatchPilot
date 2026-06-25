@@ -665,7 +665,10 @@ async def get_baseline_findings(job_id: str):
 
 
 @app.post("/verify", response_model=VerifyResponse)
-async def verify(job_id: str = Form(...)):
+async def verify(
+    job_id: str = Form(...),
+    baseline_job_id: str | None = Form(None),
+):
     job_dir = WORK_ROOT / job_id
     repo_dir = job_dir / "repo"
     if not repo_dir.exists():
@@ -675,7 +678,8 @@ async def verify(job_id: str = Form(...)):
 
     result = verify_repo(repo_dir)
 
-    baseline_findings = await get_baseline_findings(job_id)
+    baseline_job_id = baseline_job_id or job_id
+    baseline_findings = await get_baseline_findings(baseline_job_id)
 
     _, _, _, _, findings = _scan_repo_dir(repo_dir)
 
