@@ -10,4 +10,6 @@ pandas
 scikit-learn
 starlette<1.0.0
 sentence-transformers
-numpy
+numpytqdm
+transformers
+torch
