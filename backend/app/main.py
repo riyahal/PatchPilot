@@ -223,14 +223,21 @@ def _extract_dependencies(repo_dir: Path) -> List[tuple[str, str]]:
 
 
 ACTIVE_SCANS = {}
+ORG_CANCEL_EVENTS = {}
 
 
-def _scan_repo_dir(repo_dir: Path, progress_cb=None, job_dir: Path = None):
+def _scan_repo_dir(repo_dir: Path, progress_cb=None, job_dir: Path = None, cancel_event: asyncio.Event = None):
+    if cancel_event and cancel_event.is_set():
+        raise asyncio.CancelledError()
+
     if progress_cb:
         progress_cb("sast", "in_progress")
 
     semgrep_raw_out = (job_dir / "raw" / "semgrep.json") if job_dir else None
     semgrep = run_semgrep(repo_dir, raw_out=semgrep_raw_out)
+
+    if cancel_event and cancel_event.is_set():
+        raise asyncio.CancelledError()
 
     if progress_cb:
         progress_cb("sast", "completed")
@@ -241,6 +248,9 @@ def _scan_repo_dir(repo_dir: Path, progress_cb=None, job_dir: Path = None):
     osv_raw_out = (job_dir / "raw" / "osv.json") if job_dir else None
     osv = run_osv_scanner(repo_dir, raw_out=osv_raw_out)
 
+    if cancel_event and cancel_event.is_set():
+        raise asyncio.CancelledError()
+
     if progress_cb:
         progress_cb("dependency", "completed")
 
@@ -249,6 +259,9 @@ def _scan_repo_dir(repo_dir: Path, progress_cb=None, job_dir: Path = None):
 
     gitleaks_raw_out = (job_dir / "raw" / "gitleaks.json") if job_dir else None
     gitleaks = run_gitleaks(repo_dir, raw_out=gitleaks_raw_out)
+
+    if cancel_event and cancel_event.is_set():
+        raise asyncio.CancelledError()
 
     if progress_cb:
         progress_cb("secrets", "completed")
@@ -320,7 +333,7 @@ ALLOWED_REDIRECT_HOSTS = {
 MAX_REDIRECTS = 5
 
 
-async def download_to_path(url: str, dest_path: Path, max_retries: int = 5) -> None:
+async def download_to_path(url: str, dest_path: Path, max_retries: int = 5, cancel_event: asyncio.Event = None) -> None:
     """
     Download *url* to *dest_path*, following redirects only to hosts in
     ALLOWED_REDIRECT_HOSTS. Implements exponential backoff for GitHub rate limits.
@@ -368,6 +381,9 @@ async def download_to_path(url: str, dest_path: Path, max_retries: int = 5) -> N
 
                         with open(dest_path, "wb") as f:
                             async for chunk in r.aiter_bytes(chunk_size=chunk_size):
+                                if cancel_event and cancel_event.is_set():
+                                    dest_path.unlink(missing_ok=True)
+                                    raise asyncio.CancelledError("Download aborted")
                                 bytes_received += len(chunk)
                                 if bytes_received > MAX_UPLOAD_SIZE:
                                     dest_path.unlink(missing_ok=True)
@@ -1119,9 +1135,12 @@ async def _run_repo_scan_task(
     ref: str,
     project_name: str,
     org_job_id: str,
+    cancel_event: asyncio.Event = None,
 ):
     async with sem:
         try:
+            if cancel_event and cancel_event.is_set():
+                raise asyncio.CancelledError()
             db = await get_db()
             try:
                 db.row_factory = aiosqlite.Row
@@ -1151,12 +1170,17 @@ async def _run_repo_scan_task(
             ensure_dir(repo_dir)
 
             zip_url = github_zip_url(repo_url, ref=ref)
-            await download_to_path(zip_url, archive_path)
+            await download_to_path(zip_url, archive_path, cancel_event=cancel_event)
+            if cancel_event and cancel_event.is_set():
+                raise asyncio.CancelledError()
+            
             unzip_to_dir(archive_path, repo_dir)
+            if cancel_event and cancel_event.is_set():
+                raise asyncio.CancelledError()
 
             scan_root = _maybe_use_single_top_folder(repo_dir)
-            semgrep, osv, gitleaks, entropy, findings = _scan_repo_dir(
-                scan_root, job_dir=job_dir
+            semgrep, osv, gitleaks, entropy, findings = await run_in_threadpool(
+                functools.partial(_scan_repo_dir, scan_root, job_dir=job_dir, cancel_event=cancel_event)
             )
 
             raw_finding_count = len(findings)
@@ -1238,6 +1262,16 @@ async def _run_repo_scan_task(
                 await db.commit()
             finally:
                 await db.close()
+        except asyncio.CancelledError:
+            logger.info("Scan task %s was aborted", job_id)
+            db = await get_db()
+            try:
+                await db.execute(
+                    "UPDATE jobs SET status = 'aborted' WHERE job_id = ?", (job_id,)
+                )
+                await db.commit()
+            finally:
+                await db.close()
         except Exception:
             logger.exception("Failed repo scan task for job %s", job_id)
             db = await get_db()
@@ -1251,8 +1285,17 @@ async def _run_repo_scan_task(
 
 
 async def _run_org_batch(org_job_id: str, repos: List[dict]):
+    cancel_event = asyncio.Event()
+    ORG_CANCEL_EVENTS[org_job_id] = cancel_event
+
     db = await get_db()
     try:
+        cur = await db.execute("SELECT status FROM org_jobs WHERE id = ?", (org_job_id,))
+        row = await cur.fetchone()
+        if row and row[0] == 'aborted':
+            ORG_CANCEL_EVENTS.pop(org_job_id, None)
+            return
+
         await db.execute(
             "UPDATE org_jobs SET status = 'scanning' WHERE id = ?", (org_job_id,)
         )
@@ -1280,10 +1323,24 @@ async def _run_org_batch(org_job_id: str, repos: List[dict]):
             await db.close()
 
         tasks.append(
-            _run_repo_scan_task(sem, job_id, repo_url, ref, project_name, org_job_id)
+            asyncio.create_task(_run_repo_scan_task(sem, job_id, repo_url, ref, project_name, org_job_id, cancel_event))
         )
 
-    await asyncio.gather(*tasks, return_exceptions=True)
+    cancel_task = asyncio.create_task(cancel_event.wait())
+    wait_tasks = asyncio.create_task(asyncio.gather(*tasks, return_exceptions=True))
+
+    try:
+        done, pending = await asyncio.wait([wait_tasks, cancel_task], return_when=asyncio.FIRST_COMPLETED)
+
+        if cancel_task in done:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        else:
+            cancel_task.cancel()
+    finally:
+        ORG_CANCEL_EVENTS.pop(org_job_id, None)
 
     db = await get_db()
     try:
@@ -1367,6 +1424,9 @@ async def get_org_status(org_job_id: str):
 
 @app.post("/api/scans/org/{org_job_id}/abort")
 async def abort_org_scan(org_job_id: str, mode: str = Query("pending")):
+    if org_job_id in ORG_CANCEL_EVENTS:
+        ORG_CANCEL_EVENTS[org_job_id].set()
+
     for attempt in range(5):
         try:
             db = await get_db()
@@ -1438,13 +1498,8 @@ async def stream_org_status(org_job_id: str):
             }
 
             yield f"data: {json.dumps(payload)}\n\n"
-            if org_row["status"] in ["completed", "failed"]:
+            if org_row["status"] in ["completed", "failed", "aborted"]:
                 break
-
-            if org_row["status"] == "aborted":
-                is_scanning = any(r["status"] == "scanning" for r in job_rows)
-                if not is_scanning:
-                    break
 
             await asyncio.sleep(1.5)
 
