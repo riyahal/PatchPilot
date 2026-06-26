@@ -47,6 +47,7 @@ from .db import (
 from .models import (
     Finding,
     FindingStatusUpdate,
+    Fix,
     FixRequest,
     FixResponse,
     Location,
@@ -669,8 +670,59 @@ async def stream_single_scan_status(job_id: str):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+async def _record_fixes_to_db(job_id: str, fixes: List[Fix]):
+    try:
+        db = await get_db()
+        try:
+            rows = []
+            for f in fixes:
+                if not f.diff:
+                    continue
+                diff_str = f.diff
+                adds = 0
+                dels = 0
+                for line in diff_str.split("\n"):
+                    if line.startswith("+") and not line.startswith("+++"):
+                        adds += 1
+                    elif line.startswith("-") and not line.startswith("---"):
+                        dels += 1
+
+                diff_line_count = adds + dels
+                files = f.files_changed
+                diff_file_count = len(files) if files else 0
+
+                if adds > 0 and dels == 0:
+                    fix_type = "insert"
+                elif dels > 0 and adds == 0:
+                    fix_type = "delete"
+                else:
+                    fix_type = "mixed"
+
+                rows.append((
+                    str(uuid.uuid4()),
+                    job_id,
+                    f.finding_id,
+                    diff_line_count,
+                    diff_file_count,
+                    fix_type
+                ))
+            if rows:
+                await db.executemany(
+                    "INSERT INTO fixes "
+                    "(id, job_id, finding_id, diff_line_count, "
+                    "diff_file_count, fix_type) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    rows
+                )
+                await db.commit()
+        finally:
+            await db.close()
+    except Exception:
+        logger.exception("Failed to record fixes to DB for job %s", job_id)
+
+
 @app.post("/fix", response_model=FixResponse)
-def fix(req: FixRequest):
+def fix(req: FixRequest, background_tasks: BackgroundTasks):
     job_dir = WORK_ROOT / req.job_id
     repo_dir = job_dir / "repo"
     if not repo_dir.exists():
@@ -678,6 +730,8 @@ def fix(req: FixRequest):
 
     repo_dir = _maybe_use_single_top_folder(repo_dir)
     fixes = propose_fixes(repo_dir, req.finding_ids)
+
+    background_tasks.add_task(_record_fixes_to_db, req.job_id, fixes)
 
     return FixResponse(job_id=req.job_id, fixes=fixes)
 
