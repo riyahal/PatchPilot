@@ -146,7 +146,7 @@ async def ollama_health():
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(f"{base_url}/api/tags")
-            
+
             if response.status_code == 200:
                 data = response.json()
                 models = [model.get("name") for model in data.get("models", [])]
