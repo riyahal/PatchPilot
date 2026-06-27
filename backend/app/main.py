@@ -796,13 +796,24 @@ async def verify(
 
 
 @app.post("/evidence-pack")
-def evidence_pack(job_id: str = Form(...), project_name: str = Form("project")):
+def evidence_pack(
+    job_id: str = Form(...),
+    project_name: str = Form("project"),
+    update_raw: bool = Form(False),
+):
     job_dir = WORK_ROOT / job_id
     repo_dir = job_dir / "repo"
     if not repo_dir.exists():
         raise HTTPException(status_code=404, detail="Unknown job_id")
 
     repo_dir = _maybe_use_single_top_folder(repo_dir)
+
+    if update_raw:
+        verify_dir = job_dir / "raw_verify"
+        if verify_dir.exists():
+            _scan_repo_dir(repo_dir, job_dir=job_dir, raw_dir_name="raw_verify")
+        else:
+            _scan_repo_dir(repo_dir, job_dir=job_dir, raw_dir_name="raw")
 
     out_dir = job_dir / "out"
     ensure_dir(out_dir)

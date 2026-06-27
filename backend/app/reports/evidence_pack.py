@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import zipfile
 from datetime import datetime, timezone
@@ -10,40 +9,11 @@ logger = logging.getLogger(__name__)
 
 
 def build_evidence_pack(
-    repo_dir: Path,
-    out_dir: Path,
-    project_name: str,
-    job_id: str,
-    job_dir: Path = None,
-    update_raw: bool = False,
+    repo_dir: Path, out_dir: Path, project_name: str, job_id: str, job_dir: Path = None
 ) -> Path:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     pack_root = out_dir / f"patchpilot_evidence_{project_name}_{job_id}_{ts}"
     pack_root.mkdir(parents=True, exist_ok=True)
-
-    if update_raw and job_dir is not None:
-        try:
-            from ..main import _scan_repo_dir
-
-            logger.info(
-                "Executing on-the-fly update of raw verification scan artifacts."
-            )
-            _scan_repo_dir(repo_dir, job_dir=job_dir, raw_dir_name="raw_verify")
-
-            verify_dir = job_dir / "raw_verify"
-            verify_dir.mkdir(parents=True, exist_ok=True)
-            if not (verify_dir / "verification-report.json").exists():
-                verify_report = {
-                    "verified_at": datetime.now(timezone.utc).isoformat(),
-                    "passed": True,
-                    "new_issues_introduced": 0,
-                    "baseline_job_id": job_id,
-                }
-                (verify_dir / "verification-report.json").write_text(
-                    json.dumps(verify_report, indent=2), encoding="utf-8"
-                )
-        except Exception as e:
-            logger.error("Failed to run on-the-fly raw update: %s", e)
 
     if job_dir is not None:
         raw_dir = job_dir / "raw"
