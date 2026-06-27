@@ -14,7 +14,6 @@ def test_dependency_diff_uses_scanner_identity_instead_of_category():
     If category casing/labels differ, diff should still include OSV findings
     based on findings.scanner.
     """
-
     latest_job = {
         "job_id": "new-job",
         "project_name": "proj",
