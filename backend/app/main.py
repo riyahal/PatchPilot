@@ -967,7 +967,7 @@ async def get_findings(job_id: str):
         cur = await db.execute(
             """
             SELECT id, rule_id, severity, category, file_path,
-                   line_number, cwe, scanner, message, package_name, package_version, created_at, ml_score, false_positive, labeled_at
+                   line_number, cwe, scanner, message, package_name, package_version, created_at, ml_score, false_positive, labeled_at, version
             FROM findings
             WHERE job_id = ?
             ORDER BY created_at
@@ -996,27 +996,36 @@ async def get_findings(job_id: str):
 
 class LabelFindingRequest(BaseModel):
     false_positive: bool
+    expected_version: int
 
 
 @app.post("/findings/{finding_id}/label")
 async def label_finding(finding_id: str, payload: LabelFindingRequest):
+    fp_int = 1 if payload.false_positive else 0
+
     db = await get_db()
     try:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute("SELECT id FROM findings WHERE id = ?", (finding_id,))
-        if not await cursor.fetchone():
-            raise HTTPException(status_code=404, detail="Finding not found")
-
-        fp_int = 1 if payload.false_positive else 0
-
-        await db.execute(
+        cursor = await db.execute(
             """
-            UPDATE findings 
-            SET false_positive = ?, labeled_at = datetime('now') 
-            WHERE id = ?
+            UPDATE findings
+            SET false_positive = ?, labeled_at = datetime('now'), version = version + 1
+            WHERE id = ? AND version = ?
             """,
-            (fp_int, finding_id),
+            (fp_int, finding_id, payload.expected_version),
         )
+
+        if cursor.rowcount == 0:
+            # Distinguish between a missing finding (404) and a stale version (409)
+            cur2 = await db.execute(
+                "SELECT id FROM findings WHERE id = ?", (finding_id,)
+            )
+            if not await cur2.fetchone():
+                raise HTTPException(status_code=404, detail="Finding not found")
+            raise HTTPException(
+                status_code=409,
+                detail="Finding has been modified by another user.",
+            )
+
         await db.commit()
     finally:
         await db.close()
