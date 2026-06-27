@@ -207,8 +207,9 @@ async def get_dependency_diff():
         query = """
             SELECT id, rule_id, severity, message, package_name, package_version
             FROM findings
-            WHERE job_id = ? AND category = 'dependency'
+            WHERE job_id = ? AND scanner = 'osv'
         """
+
 
         cur_new = await db.execute(query, (new_job_id,))
         new_findings = await cur_new.fetchall()
