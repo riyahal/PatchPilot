@@ -394,7 +394,7 @@ export function Findings() {
             scan.
           </p>
           <div className="mt-4">
-            <Button onClick={() => navigate("/")}>Go to Dashboard</Button>
+            <Button onClick={() => navigate("/dashboard")}>Go to Dashboard</Button>
           </div>
         </div>
       </div>

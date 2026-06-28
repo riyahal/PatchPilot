@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router";
-import { Moon, Sun, Sparkles } from "lucide-react";
+import { Moon, Sun } from "lucide-react";
 import { Button } from "./ui/button";
 import { useTheme } from "./theme-provider";
 import { cn } from "./ui/utils";
@@ -54,20 +54,17 @@ export function Header() {
     <header className="sticky top-0 z-50 w-full border-b border-border bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/60">
       <div className="container mx-auto flex h-16 items-center px-4 sm:px-6 lg:px-8">
         <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
-            <Sparkles className="h-5 w-5 text-primary-foreground" />
-          </div>
-          <Link to="/" className="flex items-center">
+          <Link to="/dashboard" className="flex items-center">
             <span className="text-xl font-semibold">PatchPilot</span>
           </Link>
         </div>
 
         <nav className="ml-8 hidden md:flex items-center gap-6">
           <Link
-            to="/"
+            to="/dashboard"
             className={cn(
               "text-sm font-medium transition-colors hover:text-primary",
-              isActive("/") ? "text-foreground" : "text-muted-foreground",
+              isActive("/dashboard") ? "text-foreground" : "text-muted-foreground",
             )}
           >
             Dashboard
@@ -120,7 +117,7 @@ export function Header() {
             <span className="sr-only">Toggle theme</span>
           </Button>
 
-          <Link to="/">
+          <Link to="/dashboard">
             <Button size="sm">
               New Scan
             </Button>

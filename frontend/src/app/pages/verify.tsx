@@ -333,7 +333,7 @@ export function Verify() {
         <Link to="/findings">
           <Button variant="outline">View All Findings</Button>
         </Link>
-        <Link to="/">
+        <Link to="/dashboard">
           <Button>Start New Scan</Button>
         </Link>
       </div>
