@@ -233,6 +233,7 @@ async def test_run_single_scan_task_dedup_epsilon():
     findings = [make_finding("1", "XSS", "Same"), make_finding("2", "XSS", "Same")]
 
     import numpy as np
+
     embeddings = np.array([[1.0, 0.0], [1.0, 0.0]])
 
     mock_run_in_threadpool = AsyncMock(return_value=([], [], [], [], findings))
