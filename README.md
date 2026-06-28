@@ -42,6 +42,12 @@ Everything runs locally. No data leaves your machine.
 **Backend**
 - Python 3.10+
 - `semgrep`, `osv-scanner`, and `gitleaks` available on `PATH`
+   - **semgrep**: `pip install semgrep`.
+   - **osv-scanner**: Download from the latest GitHub release and place it in a directory on your `PATH`.
+   - **gitleaks**: Install via `brew install gitleaks` (macOS/Linux) or download from the latest GitHub release.
+
+> **Note:** If the backend starts in "degraded mode," it means it cannot find these scanner executables. Ensure they are installed and their locations are included in your system's `PATH` environment variable.
+
 
 **Frontend**
 - Node.js 18+
@@ -53,6 +59,7 @@ cd backend
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+pip install -r requirements-ml.txt # Required for ML features (ranking, deduplication)
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -160,9 +167,13 @@ Thanks to all our contributors ❤️
   <img src="https://contrib.rocks/image?repo=ionfwsrijan/PatchPilot" />
 </a>
 
+---
+
 ## Security
 
 Found a vulnerability in PatchPilot itself? Please **do not** open a public issue. Read [SECURITY.md](SECURITY.md) for the responsible disclosure process.
+
+---
 
 ## License
 
