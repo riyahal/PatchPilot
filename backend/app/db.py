@@ -38,6 +38,9 @@ async def init_db():
                 ml_score        REAL,
                 features        TEXT,
                 status          TEXT DEFAULT 'open',
+                false_positive  INTEGER DEFAULT NULL,
+                labeled_at      TEXT DEFAULT NULL,
+                version         INTEGER DEFAULT 1,
                 created_at      TEXT DEFAULT (datetime('now'))
             )
         """)
@@ -78,6 +81,17 @@ async def init_db():
                 created_at TEXT DEFAULT (datetime('now'))
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS fixes (
+                id              TEXT PRIMARY KEY,
+                job_id          TEXT NOT NULL,
+                finding_id      TEXT NOT NULL,
+                diff_line_count INTEGER,
+                diff_file_count INTEGER,
+                fix_type        TEXT,   -- 'insert' | 'delete' | 'mixed' | 'none'
+                created_at      TEXT DEFAULT (datetime('now'))
+            )
+        """)
 
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("PRAGMA table_info(findings)")
@@ -89,6 +103,21 @@ async def init_db():
 
         if "ml_score" not in columns:
             await db.execute("ALTER TABLE findings ADD COLUMN ml_score REAL")
+
+        if "false_positive" not in columns:
+            await db.execute(
+                "ALTER TABLE findings ADD COLUMN false_positive INTEGER DEFAULT NULL"
+            )
+
+        if "labeled_at" not in columns:
+            await db.execute(
+                "ALTER TABLE findings ADD COLUMN labeled_at TEXT DEFAULT NULL"
+            )
+
+        if "version" not in columns:
+            await db.execute(
+                "ALTER TABLE findings ADD COLUMN version INTEGER DEFAULT 1"
+            )
 
         if "title" not in columns:
             await db.execute("ALTER TABLE findings ADD COLUMN title TEXT")

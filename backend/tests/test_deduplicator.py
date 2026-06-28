@@ -207,6 +207,7 @@ async def test_run_single_scan_task_disable_dedup():
 
     with (
         patch("app.main.run_in_threadpool", mock_run_in_threadpool),
+        patch("app.main.predictor.is_ready", False),
         patch("app.main.get_db", AsyncMock(return_value=db)),
         patch.dict(os.environ, {"DISABLE_DEDUP": "true"}),
         patch("app.main.SENTENCE_TRANSFORMERS_AVAILABLE", True),
@@ -249,6 +250,7 @@ async def test_run_single_scan_task_dedup_epsilon():
 
     with (
         patch("app.main.run_in_threadpool", mock_run_in_threadpool),
+        patch("app.main.predictor.is_ready", False),
         patch("app.main.get_db", AsyncMock(return_value=db)),
         patch.dict(os.environ, {"DISABLE_DEDUP": "false", "DEDUP_EPSILON": "0.15"}),
         patch("app.main.SENTENCE_TRANSFORMERS_AVAILABLE", True),

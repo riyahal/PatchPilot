@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -31,6 +32,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.ml.deduplicator import SENTENCE_TRANSFORMERS_AVAILABLE, deduplicate
+from app.ml.fp_predictor import predictor
 from app.ml.ranker import load_ranker, scoring_function
 
 from .db import (
@@ -53,6 +55,7 @@ from .db import (
 from .models import (
     Finding,
     FindingStatusUpdate,
+    Fix,
     FixRequest,
     FixResponse,
     Location,
@@ -140,6 +143,42 @@ def health():
     }
 
 
+@app.get("/api/health/ollama", tags=["Health"])
+async def ollama_health():
+    """
+    Ping the local Ollama service to verify availability and list installed models.
+    Fails gracefully to prevent 500 errors if the service is down.
+    """
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+    timeout = httpx.Timeout(3.0)
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(f"{base_url}/api/tags")
+
+            if response.status_code == 200:
+                data = response.json()
+                models = [model.get("name") for model in data.get("models", [])]
+                return {
+                    "available": True,
+                    "models": models,
+                    "base_url": base_url,
+                }
+            else:
+                return {
+                    "available": False,
+                    "models": [],
+                    "base_url": base_url,
+                }
+    except (httpx.RequestError, ValueError, AttributeError, TypeError) as e:
+        logger.warning(f"Ollama health check failed: {e}")
+        return {
+            "available": False,
+            "models": [],
+            "base_url": base_url,
+        }
+
+
 def _prioritize_findings(findings: List[Finding]) -> List[Finding]:
     def score(f: Finding) -> int:
         sev = {"CRITICAL": 100, "HIGH": 80, "MEDIUM": 50, "LOW": 20, "INFO": 5}.get(
@@ -193,24 +232,51 @@ def _extract_dependencies(repo_dir: Path) -> List[tuple[str, str]]:
 
 
 ACTIVE_SCANS = {}
+ORG_CANCEL_EVENTS = {}
 
 
-def _scan_repo_dir(repo_dir: Path, progress_cb=None):
+def _scan_repo_dir(
+    repo_dir: Path,
+    progress_cb=None,
+    job_dir: Path = None,
+    cancel_event: asyncio.Event = None,
+    raw_dir_name: str = "raw",
+):
+    if cancel_event and cancel_event.is_set():
+        raise asyncio.CancelledError()
     if progress_cb:
         progress_cb("sast", "in_progress")
-    semgrep = run_semgrep(repo_dir)
+
+    semgrep_raw_out = (job_dir / raw_dir_name / "semgrep.json") if job_dir else None
+    semgrep = run_semgrep(repo_dir, raw_out=semgrep_raw_out)
+
+    if cancel_event and cancel_event.is_set():
+        raise asyncio.CancelledError()
+
     if progress_cb:
         progress_cb("sast", "completed")
 
     if progress_cb:
         progress_cb("dependency", "in_progress")
-    osv = run_osv_scanner(repo_dir)
+
+    osv_raw_out = (job_dir / raw_dir_name / "osv.json") if job_dir else None
+    osv = run_osv_scanner(repo_dir, raw_out=osv_raw_out)
+
+    if cancel_event and cancel_event.is_set():
+        raise asyncio.CancelledError()
+
     if progress_cb:
         progress_cb("dependency", "completed")
 
     if progress_cb:
         progress_cb("secrets", "in_progress")
-    gitleaks = run_gitleaks(repo_dir)
+
+    gitleaks_raw_out = (job_dir / raw_dir_name / "gitleaks.json") if job_dir else None
+    gitleaks = run_gitleaks(repo_dir, raw_out=gitleaks_raw_out)
+
+    if cancel_event and cancel_event.is_set():
+        raise asyncio.CancelledError()
+
     if progress_cb:
         progress_cb("secrets", "completed")
 
@@ -236,6 +302,10 @@ def _scan_repo_dir(repo_dir: Path, progress_cb=None):
 
 
 def finding_key(f: Finding):
+    """Generate a stable identifier for a finding.
+    Uses rule identifier, file path, and start line so that findings from the
+    same rule on different lines are treated as distinct findings.
+    """
     metadata = f.metadata or {}
 
     rule_id = (
@@ -277,7 +347,9 @@ ALLOWED_REDIRECT_HOSTS = {
 MAX_REDIRECTS = 5
 
 
-async def download_to_path(url: str, dest_path: Path, max_retries: int = 5) -> None:
+async def download_to_path(
+    url: str, dest_path: Path, max_retries: int = 5, cancel_event: asyncio.Event = None
+) -> None:
     """
     Download *url* to *dest_path*, following redirects only to hosts in
     ALLOWED_REDIRECT_HOSTS. Implements exponential backoff for GitHub rate limits.
@@ -323,21 +395,21 @@ async def download_to_path(url: str, dest_path: Path, max_retries: int = 5) -> N
                         bytes_received = 0
                         chunk_size = 1024 * 1024
 
-                        exceeded = False
-                        with open(dest_path, "wb") as f:
-                            async for chunk in r.aiter_bytes(chunk_size=chunk_size):
-                                bytes_received += len(chunk)
-                                if bytes_received > MAX_UPLOAD_SIZE:
-                                    exceeded = True
-                                    break
-                                f.write(chunk)
-
-                        if exceeded:
+                        try:
+                            with open(dest_path, "wb") as f:
+                                async for chunk in r.aiter_bytes(chunk_size=chunk_size):
+                                    if cancel_event and cancel_event.is_set():
+                                        raise asyncio.CancelledError("Download aborted")
+                                    bytes_received += len(chunk)
+                                    if bytes_received > MAX_UPLOAD_SIZE:
+                                        raise HTTPException(
+                                            status_code=413,
+                                            detail=f"Remote repository exceeds the maximum limit of {MAX_UPLOAD_MB}MB.",
+                                        )
+                                    f.write(chunk)
+                        except BaseException:
                             dest_path.unlink(missing_ok=True)
-                            raise HTTPException(
-                                status_code=413,
-                                detail=f"Remote repository exceeds the maximum limit of {MAX_UPLOAD_MB}MB.",
-                            )
+                            raise
                         return
 
                 if status_code_for_retry in (403, 429):
@@ -366,6 +438,30 @@ async def download_to_path(url: str, dest_path: Path, max_retries: int = 5) -> N
                     )
                 jitter = random.uniform(0.5, 1.5)
                 await asyncio.sleep((base_delay * (2**attempt)) + jitter)
+
+
+async def _apply_fp_predictor(findings: List[Finding]) -> None:
+    ml_input = []
+    for f in findings:
+        rule_id = (
+            (f.metadata or {}).get("check_id")
+            or (f.metadata or {}).get("rule")
+            or (f.metadata or {}).get("osv_id")
+            or f.title
+        )
+        ml_input.append(
+            {
+                "rule_id": rule_id,
+                "message": f.description or f.title,
+                "file_path": f.location.path if f.location else "",
+                "ml_score": getattr(f, "ml_score", 1.0),
+            }
+        )
+
+    adjusted_scores = await run_in_threadpool(predictor.adjust_scores, ml_input)
+
+    for f, new_score in zip(findings, adjusted_scores):
+        f.ml_score = new_score
 
 
 def _maybe_use_single_top_folder(repo_dir: Path) -> Path:
@@ -406,8 +502,11 @@ async def _run_single_scan_task(
         finally:
             await db.close()
 
+        job_dir = WORK_ROOT / job_id
         semgrep, osv, gitleaks, entropy, findings = await run_in_threadpool(
-            _scan_repo_dir, scan_root, update_progress
+            functools.partial(
+                _scan_repo_dir, scan_root, update_progress, job_dir=job_dir
+            )
         )
 
         raw_finding_count = len(findings)
@@ -420,6 +519,8 @@ async def _run_single_scan_task(
 
         if not disable_dedup and SENTENCE_TRANSFORMERS_AVAILABLE:
             findings = deduplicate(findings, epsilon)
+
+        await _apply_fp_predictor(findings)
 
         finding_count = len(findings)
 
@@ -592,8 +693,63 @@ async def stream_single_scan_status(job_id: str):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+async def _record_fixes_to_db(job_id: str, fixes: List[Fix]):
+    try:
+        db = await get_db()
+        try:
+            rows = []
+            for f in fixes:
+                if not f.diff:
+                    continue
+                diff_str = f.diff
+                adds = 0
+                dels = 0
+                for line in diff_str.split("\n"):
+                    if line.startswith("+") and not line.startswith("+++"):
+                        adds += 1
+                    elif line.startswith("-") and not line.startswith("---"):
+                        dels += 1
+
+                diff_line_count = adds + dels
+                files = f.files_changed
+                diff_file_count = len(files) if files else 0
+
+                if adds == 0 and dels == 0:
+                    fix_type = "none"
+                elif adds > 0 and dels == 0:
+                    fix_type = "insert"
+                elif dels > 0 and adds == 0:
+                    fix_type = "delete"
+                else:
+                    fix_type = "mixed"
+
+                rows.append(
+                    (
+                        str(uuid.uuid4()),
+                        job_id,
+                        f.finding_id,
+                        diff_line_count,
+                        diff_file_count,
+                        fix_type,
+                    )
+                )
+            if rows:
+                await db.executemany(
+                    "INSERT INTO fixes "
+                    "(id, job_id, finding_id, diff_line_count, "
+                    "diff_file_count, fix_type) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    rows,
+                )
+                await db.commit()
+        finally:
+            await db.close()
+    except Exception:
+        logger.exception("Failed to record fixes to DB for job %s", job_id)
+
+
 @app.post("/fix", response_model=FixResponse)
-def fix(req: FixRequest):
+def fix(req: FixRequest, background_tasks: BackgroundTasks):
     job_dir = WORK_ROOT / req.job_id
     repo_dir = job_dir / "repo"
     if not repo_dir.exists():
@@ -602,27 +758,34 @@ def fix(req: FixRequest):
     repo_dir = _maybe_use_single_top_folder(repo_dir)
     fixes = propose_fixes(repo_dir, req.finding_ids)
 
+    background_tasks.add_task(_record_fixes_to_db, req.job_id, fixes)
+
     return FixResponse(job_id=req.job_id, fixes=fixes)
 
 
 async def get_baseline_findings(job_id: str):
     db = await get_db()
     try:
-        rows = await get_findings_by_job_id(db, job_id)
-        return {
-            (
-                row["rule_id"],
-                row["file_path"],
-                row["line_number"],
-            )
-            for row in rows
-        }
+        cursor = await db.execute(
+            """
+            SELECT rule_id, file_path
+            FROM findings
+            WHERE job_id = ?
+            """,
+            (job_id,),
+        )
+        rows = await cursor.fetchall()
+
+        return {(row[0], row[1]) for row in rows}
     finally:
         await db.close()
 
 
 @app.post("/verify", response_model=VerifyResponse)
-async def verify(job_id: str = Form(...)):
+async def verify(
+    job_id: str = Form(...),
+    baseline_job_id: str | None = Form(None),
+):
     job_dir = WORK_ROOT / job_id
     repo_dir = job_dir / "repo"
     if not repo_dir.exists():
@@ -632,9 +795,12 @@ async def verify(job_id: str = Form(...)):
 
     result = verify_repo(repo_dir)
 
-    baseline_findings = await get_baseline_findings(job_id)
+    baseline_job_id = baseline_job_id or job_id
+    baseline_findings = await get_baseline_findings(baseline_job_id)
 
-    _, _, _, _, findings = _scan_repo_dir(repo_dir)
+    _, _, _, _, findings = _scan_repo_dir(
+        repo_dir, job_dir=job_dir, raw_dir_name="raw_verify"
+    )
 
     current_findings = {finding_key(f) for f in findings}
 
@@ -648,6 +814,19 @@ async def verify(job_id: str = Form(...)):
     )
 
     passed = 1 if result.ok and new_issues_introduced == 0 else 0
+
+    verify_dir = job_dir / "raw_verify"
+    verify_dir.mkdir(parents=True, exist_ok=True)
+    verify_report = {
+        "verified_at": datetime.now(timezone.utc).isoformat(),
+        "passed": bool(passed),
+        "new_issues_introduced": new_issues_introduced,
+        "baseline_job_id": baseline_job_id,
+    }
+    (verify_dir / "verification-report.json").write_text(
+        json.dumps(verify_report, indent=2), encoding="utf-8"
+    )
+
     try:
         db = await get_db()
         try:
@@ -673,7 +852,11 @@ async def verify(job_id: str = Form(...)):
 
 
 @app.post("/evidence-pack")
-def evidence_pack(job_id: str = Form(...), project_name: str = Form("project")):
+def evidence_pack(
+    job_id: str = Form(...),
+    project_name: str = Form("project"),
+    update_raw: bool = Form(False),
+):
     job_dir = WORK_ROOT / job_id
     repo_dir = job_dir / "repo"
     if not repo_dir.exists():
@@ -681,11 +864,22 @@ def evidence_pack(job_id: str = Form(...), project_name: str = Form("project")):
 
     repo_dir = _maybe_use_single_top_folder(repo_dir)
 
+    if update_raw:
+        verify_dir = job_dir / "raw_verify"
+        if verify_dir.exists():
+            _scan_repo_dir(repo_dir, job_dir=job_dir, raw_dir_name="raw_verify")
+        else:
+            _scan_repo_dir(repo_dir, job_dir=job_dir, raw_dir_name="raw")
+
     out_dir = job_dir / "out"
     ensure_dir(out_dir)
 
     pack_path = build_evidence_pack(
-        repo_dir=repo_dir, out_dir=out_dir, project_name=project_name, job_id=job_id
+        repo_dir=repo_dir,
+        out_dir=out_dir,
+        project_name=project_name,
+        job_id=job_id,
+        job_dir=job_dir,
     )
     return FileResponse(
         path=str(pack_path), filename=pack_path.name, media_type="application/zip"
@@ -756,7 +950,18 @@ async def get_findings(job_id: str):
         raw_finding_count = job_row.get("raw_finding_count")
         finding_count = job_row.get("finding_count")
 
-        rows = await get_findings_by_job_id(db, job_id)
+        cur = await db.execute(
+            """
+            SELECT id, rule_id, severity, category, file_path,
+                   line_number, cwe, scanner, message, package_name, package_version, created_at, ml_score, false_positive, labeled_at, version
+            FROM findings
+            WHERE job_id = ?
+            ORDER BY created_at
+            """,
+            (job_id,),
+        )
+        columns = [col[0] for col in cur.description]
+        rows = await cur.fetchall()
     finally:
         await db.close()
 
@@ -772,6 +977,49 @@ async def get_findings(job_id: str):
         "raw_finding_count": raw_finding_count,
         "finding_count": finding_count,
         "findings": findings,
+    }
+
+
+class LabelFindingRequest(BaseModel):
+    false_positive: bool
+    expected_version: int
+
+
+@app.post("/findings/{finding_id}/label")
+async def label_finding(finding_id: str, payload: LabelFindingRequest):
+    fp_int = 1 if payload.false_positive else 0
+
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            """
+            UPDATE findings
+            SET false_positive = ?, labeled_at = datetime('now'), version = version + 1
+            WHERE id = ? AND version = ?
+            """,
+            (fp_int, finding_id, payload.expected_version),
+        )
+
+        if cursor.rowcount == 0:
+            # Distinguish between a missing finding (404) and a stale version (409)
+            cur2 = await db.execute(
+                "SELECT id FROM findings WHERE id = ?", (finding_id,)
+            )
+            if not await cur2.fetchone():
+                raise HTTPException(status_code=404, detail="Finding not found")
+            raise HTTPException(
+                status_code=409,
+                detail="Finding has been modified by another user.",
+            )
+
+        await db.commit()
+    finally:
+        await db.close()
+
+    return {
+        "status": "success",
+        "finding_id": finding_id,
+        "false_positive": payload.false_positive,
     }
 
 
@@ -935,9 +1183,12 @@ async def _run_repo_scan_task(
     ref: str,
     project_name: str,
     org_job_id: str,
+    cancel_event: asyncio.Event = None,
 ):
     async with sem:
         try:
+            if cancel_event and cancel_event.is_set():
+                raise asyncio.CancelledError()
             db = await get_db()
             try:
                 db.row_factory = aiosqlite.Row
@@ -961,11 +1212,23 @@ async def _run_repo_scan_task(
             ensure_dir(repo_dir)
 
             zip_url = github_zip_url(repo_url, ref=ref)
-            await download_to_path(zip_url, archive_path)
+            await download_to_path(zip_url, archive_path, cancel_event=cancel_event)
+            if cancel_event and cancel_event.is_set():
+                raise asyncio.CancelledError()
+
             unzip_to_dir(archive_path, repo_dir)
+            if cancel_event and cancel_event.is_set():
+                raise asyncio.CancelledError()
 
             scan_root = _maybe_use_single_top_folder(repo_dir)
-            semgrep, osv, gitleaks, entropy, findings = _scan_repo_dir(scan_root)
+            semgrep, osv, gitleaks, entropy, findings = await run_in_threadpool(
+                functools.partial(
+                    _scan_repo_dir,
+                    scan_root,
+                    job_dir=job_dir,
+                    cancel_event=cancel_event,
+                )
+            )
 
             raw_finding_count = len(findings)
 
@@ -977,6 +1240,8 @@ async def _run_repo_scan_task(
 
             if not disable_dedup and SENTENCE_TRANSFORMERS_AVAILABLE:
                 findings = deduplicate(findings, epsilon)
+
+            await _apply_fp_predictor(findings)
 
             finding_count = len(findings)
 
@@ -1041,6 +1306,9 @@ async def _run_repo_scan_task(
                 )
             finally:
                 await db.close()
+        except asyncio.CancelledError:
+            logger.info("Scan task %s was aborted", job_id)
+            # No database write here
         except Exception:
             logger.exception("Failed repo scan task for job %s", job_id)
             db = await get_db()
@@ -1051,8 +1319,19 @@ async def _run_repo_scan_task(
 
 
 async def _run_org_batch(org_job_id: str, repos: List[dict]):
+    cancel_event = asyncio.Event()
+    ORG_CANCEL_EVENTS[org_job_id] = cancel_event
+
     db = await get_db()
     try:
+        cur = await db.execute(
+            "SELECT status FROM org_jobs WHERE id = ?", (org_job_id,)
+        )
+        row = await cur.fetchone()
+        if row and row[0] == "aborted":
+            ORG_CANCEL_EVENTS.pop(org_job_id, None)
+            return
+
         await db.execute(
             "UPDATE org_jobs SET status = 'scanning' WHERE id = ?", (org_job_id,)
         )
@@ -1078,10 +1357,40 @@ async def _run_org_batch(org_job_id: str, repos: List[dict]):
             await db.close()
 
         tasks.append(
-            _run_repo_scan_task(sem, job_id, repo_url, ref, project_name, org_job_id)
+            asyncio.create_task(
+                _run_repo_scan_task(
+                    sem, job_id, repo_url, ref, project_name, org_job_id, cancel_event
+                )
+            )
         )
 
-    await asyncio.gather(*tasks, return_exceptions=True)
+    cancel_task = asyncio.create_task(cancel_event.wait())
+    wait_tasks = asyncio.create_task(asyncio.gather(*tasks, return_exceptions=True))
+
+    try:
+        done, pending = await asyncio.wait(
+            [wait_tasks, cancel_task], return_when=asyncio.FIRST_COMPLETED
+        )
+
+        if cancel_task in done:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+            db = await get_db()
+            try:
+                await db.execute(
+                    "UPDATE jobs SET status = 'aborted' WHERE org_job_id = ? AND status NOT IN ('completed', 'failed')",
+                    (org_job_id,),
+                )
+                await db.commit()
+            finally:
+                await db.close()
+        else:
+            cancel_task.cancel()
+    finally:
+        ORG_CANCEL_EVENTS.pop(org_job_id, None)
 
     db = await get_db()
     try:
@@ -1165,6 +1474,9 @@ async def get_org_status(org_job_id: str):
 
 @app.post("/api/scans/org/{org_job_id}/abort")
 async def abort_org_scan(org_job_id: str, mode: str = Query("pending")):
+    if org_job_id in ORG_CANCEL_EVENTS:
+        ORG_CANCEL_EVENTS[org_job_id].set()
+
     for attempt in range(5):
         try:
             db = await get_db()
@@ -1236,13 +1548,8 @@ async def stream_org_status(org_job_id: str):
             }
 
             yield f"data: {json.dumps(payload)}\n\n"
-            if org_row["status"] in ["completed", "failed"]:
+            if org_row["status"] in ["completed", "failed", "aborted"]:
                 break
-
-            if org_row["status"] == "aborted":
-                is_scanning = any(r["status"] == "scanning" for r in job_rows)
-                if not is_scanning:
-                    break
 
             await asyncio.sleep(1.5)
 
