@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { DiffViewer } from "../components/diff-viewer";
 import { SeverityChip } from "../components/severity-chip";
 import { Badge } from "../components/ui/badge";
+import { FixConfidence } from "../components/fix-confidence";
 
 const sampleDiffs = [
   { type: "context" as const, content: "async function getUser(userId: string) {", oldLine: 44, newLine: 44 },
@@ -38,6 +39,7 @@ export function Fix() {
       effort: "5 min",
       filesAffected: 1,
       diff: sampleDiffs,
+      fix_confidence: 0.92,
     },
     {
       id: 1,
@@ -48,6 +50,29 @@ export function Fix() {
       effort: "15 min",
       filesAffected: 2,
       diff: sampleDiffs2,
+      fix_confidence: 0.56,
+    },
+    {
+      id: 2,
+      title: "Rotate leaked secret",
+      severity: "high" as const,
+      file: "config/.env",
+      risk: "High",
+      effort: "10 min",
+      filesAffected: 1,
+      diff: sampleDiffs,
+      fix_confidence: 0.3,
+    },
+    {
+      id: 3,
+      title: "Manual review required",
+      severity: "medium" as const,
+      file: "src/utils/helpers.ts",
+      risk: "Low",
+      effort: "30 min",
+      filesAffected: 1,
+      diff: sampleDiffs2,
+      fix_confidence: null,
     },
   ];
 
@@ -146,7 +171,7 @@ export function Fix() {
 
               <DiffViewer diff={fix.diff} filename={fix.file} className="mb-4" />
 
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Link to="/verify">
                   <Button>Apply Patch</Button>
                 </Link>
@@ -161,6 +186,11 @@ export function Fix() {
                   <Copy className="h-4 w-4 mr-2" />
                   Copy Patch
                 </Button>
+                {typeof fix.fix_confidence !== "undefined" && fix.fix_confidence !== null && (
+                  <div className="ml-4">
+                    <FixConfidence confidence={fix.fix_confidence} />
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
