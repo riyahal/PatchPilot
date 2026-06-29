@@ -186,11 +186,9 @@ export function Fix() {
                   <Copy className="h-4 w-4 mr-2" />
                   Copy Patch
                 </Button>
-                {typeof fix.fix_confidence !== "undefined" && fix.fix_confidence !== null && (
-                  <div className="ml-4">
-                    <FixConfidence confidence={fix.fix_confidence} />
-                  </div>
-                )}
+            <div className="ml-4">
+              <FixConfidence confidence={fix.fix_confidence} />
+            </div>
               </div>
             </CardContent>
           </Card>
