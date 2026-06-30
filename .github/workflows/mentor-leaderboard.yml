@@ -27,23 +27,19 @@ jobs:
             const prNumber = context.payload.pull_request.number;
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-
             // 1. Fetch mentors/reviewers for this PR
             const reviews = await github.paginate(github.rest.pulls.listReviews, {
               owner,
               repo,
               pull_number: prNumber,
             });
-
             const prReviewers = new Set(reviews.map(review => review.user.login));
-
             // 2. Load current stats
             if (!fs.existsSync(path)) {
               console.log(`'${path}' not found. Skipping mentor thank you. A mentor file must exist.`);
               return;
             }
             const mentors = JSON.parse(fs.readFileSync(path, 'utf8'));
-
             // 3. Find which mentors reviewed this PR
             const mentorsWhoReviewed = [];
             for (const reviewer of prReviewers) {
@@ -51,14 +47,11 @@ jobs:
                 mentorsWhoReviewed.push(`@${reviewer}`);
               }
             }
-            
             if (mentorsWhoReviewed.length === 0) {
               console.log("No mentors reviewed this PR. Skipping comment.");
               return;
             }
-
             const commentBody = `✨ Thank you to our mentor(s) ${mentorsWhoReviewed.join(', ')} for reviewing this PR! ✨\n\nYour contribution is tracked on the main Mentor Leaderboard.`;
-
             await github.rest.issues.createComment({
               owner,
               repo,
